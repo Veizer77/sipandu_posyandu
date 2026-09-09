@@ -2,9 +2,9 @@
  * SIPANDU - Verifikasi Kunjungan oleh Bidan
  * Alur verifikasi PRD F-08: Draft -> Diperiksa -> Valid (dapat dikembalikan ke Draft).
  */
-import React from "react";
+import React, { useState } from "react";
 import { Link } from "react-router-dom";
-import { CheckCircle2, ClipboardList, FileCheck2, Eye, Undo2, CheckCheck } from "lucide-react";
+import { CheckCircle2, ClipboardList, FileCheck2, Eye, Undo2, CheckCheck, X } from "lucide-react";
 import { CategoryBadge } from "@/components/meja/MejaShared";
 import { useAuth } from "@/lib/auth-context";
 import { useSipandu } from "@/lib/data-store";
@@ -44,9 +44,21 @@ export default function BidanVerifikasi() {
     showToast("Data kunjungan terverifikasi valid oleh Bidan.", "success");
   }
 
-  async function kembalikan(id: string) {
-    await verifikasiKunjungan(id, "draft");
+  // Kembalikan ke Draft wajib menyertakan catatan perbaikan (PRD F-08)
+  const [returnId, setReturnId] = useState<string | null>(null);
+  const [returnNote, setReturnNote] = useState("");
+
+  async function konfirmasiKembalikan() {
+    if (!returnId) return;
+    const note = returnNote.trim();
+    if (!note) {
+      showToast("Catatan perbaikan wajib diisi sebelum mengembalikan ke Draft.", "danger");
+      return;
+    }
+    await verifikasiKunjungan(returnId, "draft", note);
     showToast("Kunjungan dikembalikan ke Draft untuk diperbaiki Kader.", "warning");
+    setReturnId(null);
+    setReturnNote("");
   }
 
   return (
@@ -139,8 +151,8 @@ export default function BidanVerifikasi() {
                             <CheckCircle2 className="w-3 h-3" /> Valid
                           </span>
                           <button
-                            onClick={() => kembalikan(k.id)}
-                            title="Kembalikan ke Draft"
+                            onClick={() => { setReturnId(k.id); setReturnNote(""); }}
+                            title="Kembalikan ke Draft (wajib catatan)"
                             className="p-1.5 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition"
                           >
                             <Undo2 className="w-3.5 h-3.5" />
@@ -157,7 +169,7 @@ export default function BidanVerifikasi() {
                             </button>
                           ) : (
                             <button
-                              onClick={() => kembalikan(k.id)}
+                              onClick={() => { setReturnId(k.id); setReturnNote(""); }}
                               className="px-2.5 py-1.5 border border-gray-200 hover:bg-gray-50 text-gray-600 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5"
                             >
                               <Undo2 className="w-3 h-3" /> Kembalikan
@@ -179,6 +191,44 @@ export default function BidanVerifikasi() {
           </tbody>
         </table>
       </div>
+
+      {returnId && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setReturnId(null)}>
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-gray-900">Kembalikan ke Draft</h3>
+              <button onClick={() => setReturnId(null)} className="p-1.5 text-gray-400 hover:text-gray-700 rounded-lg">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-gray-500">
+              Cantumkan alasan perbaikan agar Kader dapat menindaklanjuti. Catatan wajib diisi.
+            </p>
+            <textarea
+              value={returnNote}
+              onChange={(e) => setReturnNote(e.target.value)}
+              rows={3}
+              placeholder="Contoh: Berat badan belum terisi, mohon diukur ulang di Meja 2."
+              className="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-amber-300"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setReturnId(null)}
+                className="px-4 py-2 text-gray-600 font-semibold rounded-xl text-sm hover:bg-gray-100"
+              >
+                Batal
+              </button>
+              <button
+                onClick={konfirmasiKembalikan}
+                disabled={!returnNote.trim()}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-bold rounded-xl text-sm"
+              >
+                Kembalikan ke Draft
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

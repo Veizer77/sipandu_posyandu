@@ -310,7 +310,7 @@ export default function KaderDashboardPage() {
         <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex items-center justify-between">
           <div>
             <h3 className="font-bold text-gray-900">Rekapitulasi & Pelaporan</h3>
-            <p className="text-xs text-gray-500 mt-1">Laporan Bulanan PDF, L-01 s/d L-08 Otomatis</p>
+            <p className="text-xs text-gray-500 mt-1">Laporan Bulanan PDF · L-01 &amp; L-08 tersedia, L-02–L-07 segera hadir</p>
             <div className="mt-3 flex gap-2">
               <Link to="/rekap" className="px-3.5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-xl text-xs font-semibold transition flex items-center gap-1">
                 <ClipboardCheck className="w-3 h-3" /> Rekap Sesi

@@ -531,6 +531,16 @@ export const SIPANDU_SEED = {
   kunjungan: [],
   kunjunganAktif: [],
 
+  // Nama persona kanonik per peran (sumber tunggal kebenaran untuk sapaan di semua
+  // dashboard). Diambil dari akun `users` di atas agar konsisten lintas halaman.
+  persona: {
+    super_admin: "Izzat (Super Admin)",
+    kader: "Bu Sari Handayani",
+    bidan: "Bdn. Siti Aminah, S.Tr.Keb",
+    ketua_pkk: "Ibu Hartini Sutrisno",
+    kepala_desa: "Bpk. Bambang Sutrisno, S.Sos",
+  } as Record<string, string>,
+
   // 27 Master Penduduk SINDUKSADATI (PDK-000001 s/d PDK-000027)
   sinduksadatiMaster: [
     { resident_code: "PDK-000001", nik: "3579011205800001", nama_lengkap: "Bambang Subagyo", jenis_kelamin: "L", nomor_rt: "14", nomor_rw: "06", nomor_rumah: "B-12", status_penduduk: "aktif" },

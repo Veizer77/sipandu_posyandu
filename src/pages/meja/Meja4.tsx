@@ -2,10 +2,11 @@
  * SIPANDU - Meja 4: Pelayanan Kesehatan & Imunisasi
  * Dilengkapi Antrean Meja 4 Mandiri & Form Checklist Pelayanan
  */
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Check, Pill, HeartPulse, Syringe, AlertTriangle, CheckCircle2, Stethoscope, Baby } from "lucide-react";
 import { MejaStepper, CategoryBadge } from "@/components/meja/MejaShared";
+import { Avatar } from "@/components/Avatar";
 import { useAuth } from "@/lib/auth-context";
 import { getRolePrefix } from "@/lib/role-routes";
 import { useSipandu } from "@/lib/data-store";
@@ -83,7 +84,7 @@ function AntreanMeja4({ data, navigate }: { data: any; navigate: any }) {
               return (
                 <div key={k.id} className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-gray-50/60 transition">
                   <div className="flex items-center gap-3.5">
-                    <img src={a.foto || "https://images.unsplash.com/photo-1502086223501-7ea6ecd79368?w=150"} alt={a.nama} className="w-11 h-11 rounded-2xl object-cover border border-gray-200 shrink-0" />
+                    <Avatar nama={a.nama} className="w-11 h-11 rounded-2xl" />
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
                         <h4 className="font-bold text-gray-900 text-sm">{a.nama}</h4>
@@ -153,6 +154,15 @@ export default function Meja4() {
   const loadedAnggotaIdRef = useRef<string | undefined>(anggotaId);
 
   const [vitaminA, setVitaminA] = useState(Boolean(pel.vitamin_a));
+  // PRD F-07: Kapsul Vitamin A diberikan nasional hanya pada bulan Februari & Agustus
+  const isVitABulan = [1, 7].includes(new Date().getMonth());
+  const vitAPesan = isVitABulan
+    ? "Bulan ini wajib (Februari & Agustus)"
+    : "Di luar jadwal nasional (Feb & Agu)";
+  useEffect(() => {
+    if (isVitABulan && !pel.vitamin_a) setVitaminA(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [pmt, setPmt] = useState(Boolean(pel.pmt));
   const [pmtJenis, setPmtJenis] = useState(pel.pmt_jenis || "Biskuit Balita");
   const [imunisasi, setImunisasi] = useState<string[]>(pel.imunisasi || []);
@@ -280,13 +290,18 @@ export default function Meja4() {
           {(anggota.kategori === "bayi" || anggota.kategori === "balita") && (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <CheckPill
-                  icon={<Pill className="w-5 h-5" />}
-                  title="Vitamin A (Februari & Agustus)"
-                  color="amber"
-                  checked={vitaminA}
-                  onChange={setVitaminA}
-                />
+                <div className="space-y-1">
+                  <CheckPill
+                    icon={<Pill className="w-5 h-5" />}
+                    title="Vitamin A"
+                    color="amber"
+                    checked={vitaminA}
+                    onChange={setVitaminA}
+                  />
+                  <p className={`text-[11px] font-semibold ${isVitABulan ? "text-emerald-600" : "text-gray-400"}`}>
+                    {isVitABulan ? "✓ " : "• "}{vitAPesan}
+                  </p>
+                </div>
                 <CheckPill
                   icon={<HeartPulse className="w-5 h-5" />}
                   title="PMT Pemulihan / Kudapan"

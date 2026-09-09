@@ -1,23 +1,28 @@
 # Go-Live Checklist — SIPANDU Posyandu ILP Flamboyan (PRD Bagian 28)
 
 ## 1. Database (K2)
-- [ ] Jalankan `migrations/2026-09-06_build_fase2-5.sql` di InsForge production
-- [ ] Verifikasi tabel: `imunisasi`, `catatan_kunjungan`, `kehamilan`, `risiko`, `notifikasi`, `sinduksadati_event_log`
-- [ ] Normalisasi data lama: `UPDATE anggota SET kategori='ibu_hamil' WHERE kategori='bumil';`
+- [x] Skema produksi sudah ter-build (`init-schema` + `rls-policies` terapply 2026-08-04/05)
+- [x] Tabel terverifikasi ada: `imunisasi`, `catatan_kunjungan`, `kehamilan`, `risiko`, `penyuluhan`, `audit_log`, `riwayat_imunisasi`, `kunjungan_rumah`, `rujukan` (dari init-schema)
+- [x] Tabel yang belum ada telah dibuat: `notifikasi`, `sinduksadati_event_log` (2026-09-09 via InsForge CLI)
+- [x] File migrasi diselaraskan ke format kanonik: `migrations/20260909000000_buildschema.sql` (idempoten, sesuaikan `jadwal_id` → `jadwal_posyandu_id` mengikuti skema live)
+- [ ] Normalisasi data lama: `UPDATE anggota SET kategori='ibu_hamil' WHERE kategori='bumil';` (jalankan saat cutover)
 - [ ] Cek CHECK constraint `jadwal_posyandu.status` menerima `draft/aktif/selesai/dibatalkan`
 
 ## 2. Keamanan & RBAC (M-08, PRD 13.3)
-- [ ] Aktifkan RLS Bab 13.3 (kader_posyandu + admin_all) di semua tabel klinis
-- [ ] Nonaktifkan Role Switcher di produksi (sudah otomatis: hanya tampil di dev / `VITE_DEMO_MODE=true`)
-- [ ] Buat akun riil per peran (kader, bidan, ketua_pkk, kepala_desa, super_admin) via menu Pengguna
-- [ ] Hapus `.env.local` dari build produksi; set env di hosting (Vercel/InsForge)
-- [ ] Verifikasi fallback demo login tidak aktif di produksi (auth-context: fallback terjadi bila `insforgeConfigured=false`)
+- [x] RLS aktif di semua tabel klinis (`rls-policies` terapply) + tambahan: `imunisasi`, `risiko`, `audit_log`, `notifikasi`, `sinduksadati_event_log` (2026-09-09)
+- [x] Role Switcher dinonaktifkan di produksi — kredensial cepat & autofill login digate `VITE_DEMO_MODE=true` (`src/pages/Login.tsx`)
+- [ ] Buat akun riil per peran (kader, bidan, ketua_pkk, kepala_desa, super_admin) via menu Pengguna (amendemen v3.0.1: 5 akun tetap)
+- [x] `.env.local` sudah di-`.gitignore` (tidak ter-commit); env diset di hosting (Vercel/InsForge)
+- [x] Fallback demo login nonaktif di produksi (`import.meta.env.VITE_DEMO_MODE !== "true"`)
 
 ## 3. Frontend
-- [ ] `npm run typecheck && npm test && npm run build` hijau
-- [ ] Uji alur lengkap hari H: check-in → pengukuran → pencatatan → pelayanan → rekap → tutup sesi
-- [ ] Uji verifikasi Bidan: draft → diperiksa → valid (per item + bulk) → laporan hanya menghitung Valid
-- [ ] Uji profil: edit keluarga/anggota, kehamilan aktif → selesai (kategori recalc), imunisasi per jenis
+- [x] `npm run typecheck && npm test && npm run build` hijau (47 unit test, 0 error)
+- [x] Perbaikan integritas demo: hapus angka hardcoded dashboard (imunisasi/tren/stunting/APBDes), filter bulan Laporan fungsional, katalog L-01 & L-08 riil, L-02–L-07 "Segera hadir"
+- [x] Satu jalur tutup sesi (`tutupSesiHariH`) — tombol "Tutup" PosyanduJadwal sudah pakai jalur resmi
+- [x] Konsistensi nama tokoh via `SIPANDU_SEED.persona` + `currentUser.nama_lengkap`
+- [x] Avatar inisial menggantikan foto Unsplash placeholder (tanpa dependensi eksternal)
+- [ ] Uji alur lengkap hari H manual: check-in → pengukuran → pencatatan → pelayanan → rekap → tutup sesi
+- [ ] Uji verifikasi Bidan: draft → diperiksa → valid (per item + bulk, wajib catatan saat kembalikan ke Draft)
 - [ ] Mobile: sidebar drawer, bottom nav, form Meja2 per kategori (bayi/balita/bumil/wus/lansia)
 
 ## 4. Environment

@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { ROLE_LABEL, useAuth } from "@/lib/auth-context";
 import { getRoleDashboardPath, getRoleMenuPath } from "@/lib/role-routes";
 import { useSipandu } from "@/lib/data-store";
+import { Avatar } from "@/components/Avatar";
 import type { UserRole } from "@/types";
 
 interface MenuItem {
@@ -202,13 +203,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             title="Foto profil resmi petugas dikelola terpusat oleh Admin Posyandu."
             className="flex items-center gap-2.5 pl-2 border-l border-slate-200 cursor-default"
           >
-            {userPhoto ? (
-              <img src={userPhoto} alt={currentUser.nama_lengkap} className="w-9 h-9 rounded-full object-cover border border-sky-500 shadow-sm" />
-            ) : (
-              <div className="w-9 h-9 rounded-full bg-sky-600 text-white flex items-center justify-center text-xs font-bold">
-                {currentUser.nama_lengkap.slice(0, 1)}
-              </div>
-            )}
+            <Avatar nama={currentUser.nama_lengkap} className="w-9 h-9 rounded-full border border-sky-500 shadow-sm" />
             <div className="hidden md:block text-left">
               <div className="font-bold text-xs text-slate-900 leading-tight">{currentUser.nama_lengkap}</div>
               <div className="text-[10px] text-sky-700 font-semibold leading-tight">{ROLE_LABEL[currentRole]}</div>

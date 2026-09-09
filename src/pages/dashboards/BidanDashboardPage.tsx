@@ -20,6 +20,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useSipandu } from "@/lib/data-store";
 import WHO_ENGINE, { hitungUsia } from "@/utils/zscoreCalculator";
 import { statusImunisasi } from "@/utils/jadwalImunisasi";
+import { buildTren6Bulan, semuaIlustrasi } from "@/lib/tren6bulan";
 
 export default function BidanDashboardPage() {
   const { currentUser, showToast } = useAuth();
@@ -158,6 +159,13 @@ export default function BidanDashboardPage() {
     return { counts, idlLengkap, persenIDL, totalSasaran: balitaList.length };
   }, [balitaList, allVisits]);
 
+  // Tren rata-rata BB/U balita 6 bulan terakhir (agregasi riil; bulan tanpa data = ilustrasi)
+  const trenBB = useMemo(
+    () => buildTren6Bulan(allVisits, data.anggota),
+    [allVisits, data.anggota]
+  );
+  const trenSemuaIlustrasi = semuaIlustrasi(trenBB);
+
   return (
     <div className="p-4 sm:p-8 space-y-6">
       {/* Hero Section Bidan Desa */}
@@ -172,7 +180,7 @@ export default function BidanDashboardPage() {
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-1" />
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
-              Selamat Bertugas, {currentUser?.nama_lengkap || "Bdn. Siti Aminah, S.Tr.Keb"}
+              Selamat Bertugas, {currentUser?.nama_lengkap}
             </h1>
             <p className="text-blue-100 text-xs sm:text-sm max-w-2xl leading-relaxed">
               Posyandu ILP Flamboyan RW 06 Dusun Krajan · Wilayah Kerja Puskesmas Mojorejo Kota Batu. Validasi tumbuh kembang KMS, deteksi dini risiko gizi & stunting, serta rujukan faskes tingkat lanjut.
@@ -485,11 +493,11 @@ export default function BidanDashboardPage() {
 
           <div className="space-y-3">
             {[
-              { label: "HB-0 (Hepatitis B 0-7 Hari)", val: imunisasiStats.counts["HB-0"] || 4, target: balitaList.length },
-              { label: "BCG (Tuberkulosis)", val: imunisasiStats.counts["BCG"] || 5, target: balitaList.length },
-              { label: "Polio Tetes (1-4)", val: (imunisasiStats.counts["Polio 1"] || 4) + (imunisasiStats.counts["Polio 2"] || 3), target: balitaList.length * 2 },
-              { label: "DPT-HB-Hib (Pentavalen)", val: (imunisasiStats.counts["DPT-HB-Hib 1"] || 4) + (imunisasiStats.counts["DPT-HB-Hib 2"] || 3), target: balitaList.length * 2 },
-              { label: "Campak-Rubella (MR 1)", val: imunisasiStats.counts["MR 1"] || 4, target: balitaList.length },
+              { label: "HB-0 (Hepatitis B 0-7 Hari)", val: imunisasiStats.counts["HB-0"] || 0, target: balitaList.length },
+              { label: "BCG (Tuberkulosis)", val: imunisasiStats.counts["BCG"] || 0, target: balitaList.length },
+              { label: "Polio Tetes (1-4)", val: (imunisasiStats.counts["Polio 1"] || 0) + (imunisasiStats.counts["Polio 2"] || 0), target: balitaList.length * 2 },
+              { label: "DPT-HB-Hib (Pentavalen)", val: (imunisasiStats.counts["DPT-HB-Hib 1"] || 0) + (imunisasiStats.counts["DPT-HB-Hib 2"] || 0), target: balitaList.length * 2 },
+              { label: "Campak-Rubella (MR 1)", val: imunisasiStats.counts["MR 1"] || 0, target: balitaList.length },
             ].map((v, idx) => {
               const pct = v.target > 0 ? Math.min(100, Math.round((v.val / v.target) * 100)) : 0;
               return (
@@ -518,38 +526,51 @@ export default function BidanDashboardPage() {
                 <TrendingUp className="w-4 h-4" />
               </span>
               <div>
-                <h3 className="font-bold text-sm text-gray-900">Kurva Rata-Rata Pertumbuhan BB/U (Jan–Jun)</h3>
-                <p className="text-xs text-gray-500">Perbandingan rata-rata kohort terhadap median standar WHO</p>
+                <h3 className="font-bold text-sm text-gray-900">Kurva Rata-Rata Pertumbuhan BB/U (6 Bulan Terakhir)</h3>
+                <p className="text-xs text-gray-500">Agregasi rata-rata kohort balita terhadap median standar WHO</p>
               </div>
             </div>
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
-              Tren Positif
+            <span
+              className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                trenSemuaIlustrasi
+                  ? "bg-amber-100 text-amber-800"
+                  : "bg-emerald-100 text-emerald-800"
+              }`}
+            >
+              {trenSemuaIlustrasi ? "Ilustrasi" : "Data Riil"}
             </span>
           </div>
 
           {/* Bar Chart / Curve representation */}
           <div className="grid grid-cols-6 gap-2 pt-4 items-end h-44 border-b border-gray-100 pb-2">
-            {[
-              { bulan: "Jan", riil: 9.8, who: 10.1 },
-              { bulan: "Feb", riil: 10.0, who: 10.3 },
-              { bulan: "Mar", riil: 10.2, who: 10.4 },
-              { bulan: "Apr", riil: 10.4, who: 10.6 },
-              { bulan: "Mei", riil: 10.7, who: 10.8 },
-              { bulan: "Jun", riil: 11.1, who: 11.0 },
-            ].map((m, i) => (
+            {trenBB.map((m, i) => (
               <div key={i} className="flex flex-col items-center gap-1.5 h-full justify-end">
-                <span className="text-[10px] font-bold text-gray-800">{m.riil} kg</span>
+                {m.riil !== null ? (
+                  <span className="text-[10px] font-bold text-gray-800">{m.riil} kg</span>
+                ) : (
+                  <span className="text-[10px] font-bold text-amber-600" title="Belum ada data kunjungan bulan ini">
+                    Ilus.
+                  </span>
+                )}
                 <div className="w-full flex items-end justify-center gap-1 h-28">
-                  {/* Riil Bar */}
-                  <div
-                    className="w-4 bg-emerald-600 rounded-t-md transition-all hover:bg-emerald-700"
-                    style={{ height: `${(m.riil / 12) * 100}%` }}
-                    title={`Riil Balita: ${m.riil} kg`}
-                  />
+                  {/* Riil Bar (atau placeholder ilustrasi bila kosong) */}
+                  {m.riil !== null ? (
+                    <div
+                      className="w-4 bg-emerald-600 rounded-t-md transition-all hover:bg-emerald-700"
+                      style={{ height: `${(m.riil / 16) * 100}%` }}
+                      title={`Riil Balita: ${m.riil} kg (${m.jumlahSampel} sampel)`}
+                    />
+                  ) : (
+                    <div
+                      className="w-4 rounded-t-md border border-dashed border-amber-400 bg-amber-50"
+                      style={{ height: `${(m.who / 16) * 100}%` }}
+                      title="Ilustrasi: belum ada data kunjungan bulan ini"
+                    />
+                  )}
                   {/* WHO Standard Bar */}
                   <div
                     className="w-2.5 bg-gray-300 rounded-t-md transition-all"
-                    style={{ height: `${(m.who / 12) * 100}%` }}
+                    style={{ height: `${(m.who / 16) * 100}%` }}
                     title={`Standar WHO Median: ${m.who} kg`}
                   />
                 </div>

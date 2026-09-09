@@ -28,6 +28,10 @@ import { getRoleDashboardPath } from "@/lib/role-routes";
 import { insforgeConfigured } from "@/lib/insforge";
 import type { UserRole } from "@/types";
 
+// Mode demo hanya aktif bila VITE_DEMO_MODE="true" (lihat .env.example).
+// Kredensial cepat (password123) tidak boleh tersedia di lingkungan produksi.
+const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
+
 interface RoleMeta {
   role: UserRole;
   title: string;
@@ -116,8 +120,8 @@ export default function Login() {
   const navigate = useNavigate();
   const { login, isAuthenticated, currentRole, initializing, showToast } = useAuth();
 
-  const [email, setEmail] = useState("kader@flamboyan.id");
-  const [password, setPassword] = useState("password123");
+  const [email, setEmail] = useState(DEMO_MODE ? "kader@flamboyan.id" : "");
+  const [password, setPassword] = useState(DEMO_MODE ? "password123" : "");
   const [selectedRole, setSelectedRole] = useState<UserRole>("kader");
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
@@ -161,6 +165,7 @@ export default function Login() {
 
   function handleSelectRole(role: UserRole) {
     setSelectedRole(role);
+    if (!DEMO_MODE) return;
     const cred = QUICK_CREDENTIALS[role];
     if (cred) {
       setEmail(cred.email);
@@ -173,6 +178,7 @@ export default function Login() {
   async function handleDirectRoleLogin(role: UserRole, e: React.MouseEvent) {
     e.stopPropagation();
     setSelectedRole(role);
+    if (!DEMO_MODE) return;
     const cred = QUICK_CREDENTIALS[role];
     if (cred) {
       setEmail(cred.email);

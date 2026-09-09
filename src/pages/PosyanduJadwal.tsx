@@ -24,7 +24,7 @@ const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
 export default function PosyanduJadwal() {
   const { showToast, currentUser } = useAuth();
   const navigate = useNavigate();
-  const { data, tambahJadwal, updateJadwalStatus } = useSipandu();
+  const { data, tambahJadwal, updateJadwalStatus, tutupSesiHariH } = useSipandu();
   const [showBuat, setShowBuat] = useState(false);
 
   const roleMejaPath =
@@ -110,15 +110,15 @@ export default function PosyanduJadwal() {
     const prioritas = sasaran
       .map((a: any) => {
         const riwayat = (hadirByAnggota.get(a.id) || []).sort();
-        const absen2 = riwayat.length === 0 || riwayat.length < 2;
+        const pernahHadir = riwayat.length > 0;
         const kunTerakhir = [...data.kunjungan].reverse().find((k: any) => k.anggota_id === a.id);
         const is2T = kunTerakhir?.risiko?.some((r: string) => String(r).includes("2T"));
-        if (absen2 || is2T) {
-          return {
-            nama: a.nama,
-            kategori: a.kategori,
-            alasan: is2T ? "Status 2T pada kunjungan terakhir" : "Belum hadir 2 sesi terakhir",
-          };
+        if (is2T) {
+          return { nama: a.nama, kategori: a.kategori, alasan: "Status 2T pada kunjungan terakhir" };
+        }
+        // Anggota baru (belum pernah hadir) butuh pendekatan, bukan "absen 2 sesi"
+        if (!pernahHadir) {
+          return { nama: a.nama, kategori: a.kategori, alasan: "Anggota baru — belum pernah hadir" };
         }
         return null;
       })
@@ -379,8 +379,8 @@ export default function PosyanduJadwal() {
                   {j.status === "aktif" && (
                     <button
                       onClick={async () => {
-                        await updateJadwalStatus(j.id, "selesai");
-                        showToast("Sesi posyandu ditutup.", "info");
+                        await tutupSesiHariH(j.id);
+                        showToast("Sesi posyandu ditutup & direkapitulasi.", "info");
                       }}
                       className="px-3 py-2 border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold rounded-xl text-xs"
                     >

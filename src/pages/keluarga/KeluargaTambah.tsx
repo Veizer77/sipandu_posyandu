@@ -16,10 +16,10 @@ export function KeluargaTambah() {
   const { data, tambahKeluarga } = useSipandu();
 
   const [form, setForm] = useState({
-    nomor_kk: "3579010101901234",
+    nomor_kk: "",
     nama_kepala_keluarga: "",
     alamat: "",
-    rt: "13",
+    rt: "",
     rw: "06",
     kelurahan: "Mojorejo",
     kecamatan: "Junrejo",
@@ -325,7 +325,7 @@ export function AnggotaTambah() {
   const [nik, setNik] = useState("");
   const [nama, setNama] = useState("");
   const [jk, setJk] = useState<"L" | "P">("L");
-  const [tanggalLahir, setTanggalLahir] = useState("2024-01-15");
+  const [tanggalLahir, setTanggalLahir] = useState("");
   const [hubungan, setHubungan] = useState("Anak");
   const [statusHamil, setStatusHamil] = useState(false);
   const [hpht, setHpht] = useState("");
@@ -383,6 +383,12 @@ export function AnggotaTambah() {
     // PRD 16.2 / NIK_DUPLICATE: blok submit bila NIK sudah terdaftar
     if (nikDuplikat) {
       showToast(`NIK ini sudah terdaftar atas nama ${nikDuplikat.nama}.`, "danger");
+      return;
+    }
+
+    // PRD F-03.3: HPHT wajib diisi untuk ibu hamil (dipakai hitung HPL)
+    if (statusHamil && !hpht) {
+      showToast("HPHT (Hari Pertama Haid Terakhir) wajib diisi untuk ibu hamil.", "danger");
       return;
     }
 

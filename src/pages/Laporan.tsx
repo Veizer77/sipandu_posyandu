@@ -1,19 +1,57 @@
 import React, { useMemo, useState } from "react";
 import { Printer } from "lucide-react";
 import { useSipandu } from "@/lib/data-store";
+import { SIPANDU_SEED } from "@/lib/seedData";
+
+const NAMA_BULAN = [
+  "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+  "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+];
+
+function parsePeriode(periode: string): { tahun: number; bulanIdx: number } {
+  const [nama, tahunStr] = periode.split(" ");
+  return { tahun: Number(tahunStr) || new Date().getFullYear(), bulanIdx: NAMA_BULAN.indexOf(nama) };
+}
+
+function inPeriode(waktu: string | undefined, tahun: number, bulanIdx: number): boolean {
+  if (!waktu) return false;
+  const d = new Date(waktu);
+  if (isNaN(d.getTime())) return false;
+  return d.getFullYear() === tahun && d.getMonth() === bulanIdx;
+}
 
 export default function Laporan() {
   const { data } = useSipandu();
   const [bulan, setBulan] = useState("Agustus 2026");
+  const { tahun, bulanIdx } = parsePeriode(bulan);
 
   const anggotaList = data.anggota;
-  // PRD F-08 / 35.1: hanya kunjungan berstatus Valid yang masuk laporan resmi
+  // PRD F-08 / 35.1: hanya kunjungan berstatus Valid pada periode terpilih yang masuk laporan resmi
   const visits = useMemo(
-    () => data.kunjunganAktif.filter((v: any) => v.status_verifikasi === "valid"),
-    [data.kunjunganAktif]
+    () =>
+      data.kunjunganAktif.filter(
+        (v: any) => v.status_verifikasi === "valid" && inPeriode(v.waktu_hadir, tahun, bulanIdx)
+      ),
+    [data.kunjunganAktif, tahun, bulanIdx]
   );
   const pendingCount = data.kunjunganAktif.filter((v: any) => v.status_verifikasi !== "valid").length;
   const anggotaMap = useMemo(() => new Map(anggotaList.map((a: any) => [a.id, a])), [anggotaList]);
+
+  // L-08: Daftar Hadir riil — peserta yang tercatat hadir (kunjungan valid periode terpilih)
+  const daftarHadir = useMemo(
+    () =>
+      visits
+        .map((v: any) => {
+          const a = anggotaMap.get(v.anggota_id);
+          return {
+            nama: a?.nama || "—",
+            kategori: a?.kategori || "—",
+            waktu: v.waktu_hadir ? new Date(v.waktu_hadir).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) : "—",
+          };
+        })
+        .sort((x: any, y: any) => x.nama.localeCompare(y.nama)),
+    [visits, anggotaMap]
+  );
 
   // I. Cakupan Kehadiran Sasaran (D/S)
   const cakupanDS = useMemo(() => {
@@ -98,12 +136,12 @@ export default function Laporan() {
     ];
   }, [visits]);
 
-  const bidan = data.organisasi?.find((o: any) => o.jabatan === "bidan_desa") || {
-    nama: "Bdn. Siti Aminah, S.Tr.Keb",
+  const bidan = data.organisasi?.find((o: any) => o.jabatan === "bidan") || {
+    nama: SIPANDU_SEED.persona.bidan,
     nip_sip: "19850412 201001 2 021",
   };
-  const ketua = data.organisasi?.find((o: any) => o.jabatan === "ketua_posyandu") || {
-    nama: "Ibu Sri Wahyuni",
+  const ketua = data.organisasi?.find((o: any) => o.jabatan === "ketua_pkk") || {
+    nama: SIPANDU_SEED.persona.ketua_pkk,
   };
 
   return (
@@ -272,26 +310,65 @@ export default function Laporan() {
         </div>
       </div>
 
+      {/* L-08: Daftar Hadir riil (printable) — peserta sesi periode terpilih */}
+      <div className="bg-white p-8 sm:p-12 rounded-3xl border border-gray-200 shadow-sm printable-card max-w-4xl mx-auto text-gray-900 mt-6">
+        <div className="text-center mb-6">
+          <h2 className="text-lg font-bold underline uppercase">Daftar Hadir Peserta Posyandu (L-08)</h2>
+          <p className="text-xs text-gray-600 mt-1">Periode: <strong>{bulan}</strong></p>
+        </div>
+        <table className="w-full text-xs text-left border border-gray-300">
+          <thead className="bg-gray-100 text-gray-900 font-bold border-b border-gray-300">
+            <tr>
+              <th className="p-2 border-r border-gray-300 text-center w-10">No</th>
+              <th className="p-2 border-r border-gray-300">Nama Peserta</th>
+              <th className="p-2 border-r border-gray-300">Kategori</th>
+              <th className="p-2 text-center">Waktu Hadir</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200">
+            {daftarHadir.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="p-3 text-center text-gray-500">
+                  Belum ada peserta tercatat hadir pada periode ini.
+                </td>
+              </tr>
+            ) : (
+              daftarHadir.map((p: any, i: number) => (
+                <tr key={i}>
+                  <td className="p-2 border-r border-gray-200 text-center">{i + 1}</td>
+                  <td className="p-2 border-r border-gray-200 font-medium">{p.nama}</td>
+                  <td className="p-2 border-r border-gray-200">{p.kategori}</td>
+                  <td className="p-2 text-center">{p.waktu}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
       {/* H1: Katalog laporan L-01..L-08 (PRD F-09) — print per modul */}
       <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm no-print space-y-3">
         <h3 className="font-bold text-gray-900 text-sm">Katalog Laporan (PRD F-09)</h3>
-        <p className="text-xs text-gray-500">Gunakan tombol cetak di atas; pilih bagian yang ingin dicetak. L-01 dirender penuh di atas.</p>
+        <p className="text-xs text-gray-500">Gunakan tombol cetak di atas; pilih bagian yang ingin dicetak. L-01 &amp; L-08 dirender penuh di atas.</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
           {[
-            { kode: "L-01", nama: "Laporan Bulanan Posyandu", isi: "Semua komponen (render penuh di atas)" },
-            { kode: "L-02", nama: "Laporan Sasaran", isi: "Tabel I — D/S per kategori" },
-            { kode: "L-03", nama: "Laporan Pertumbuhan Balita", isi: "Tabel II — Naik/T/2T, stunting" },
-            { kode: "L-04", nama: "Laporan Pelayanan", isi: "Tabel III — Vitamin A, PMT, Imunisasi, Fe" },
-            { kode: "L-05", nama: "Laporan Ibu Hamil", isi: "Risiko bumil (lihat Dashboard Bidan)" },
-            { kode: "L-06", nama: "Laporan Lansia", isi: "Risiko lansia (lihat Dashboard Bidan)" },
-            { kode: "L-07", nama: "Rekapitulasi Kumulatif", isi: "Kuartal/tahun — butuh histori ≥3 bulan" },
-            { kode: "L-08", nama: "Daftar Hadir", isi: "Sesi aktif — lihat Rekapitulasi Sesi" },
+            { kode: "L-01", nama: "Laporan Bulanan Posyandu", isi: "Semua komponen (render penuh di atas)", tersedia: true },
+            { kode: "L-02", nama: "Laporan Sasaran", isi: "Tabel I — D/S per kategori", tersedia: false },
+            { kode: "L-03", nama: "Laporan Pertumbuhan Balita", isi: "Tabel II — Naik/T/2T, stunting", tersedia: false },
+            { kode: "L-04", nama: "Laporan Pelayanan", isi: "Tabel III — Vitamin A, PMT, Imunisasi, Fe", tersedia: false },
+            { kode: "L-05", nama: "Laporan Ibu Hamil", isi: "Risiko bumil (lihat Dashboard Bidan)", tersedia: false },
+            { kode: "L-06", nama: "Laporan Lansia", isi: "Risiko lansia (lihat Dashboard Bidan)", tersedia: false },
+            { kode: "L-07", nama: "Rekapitulasi Kumulatif", isi: "Kuartal/tahun — butuh histori ≥3 bulan", tersedia: false },
+            { kode: "L-08", nama: "Daftar Hadir", isi: "Peserta sesi periode terpilih (render penuh di atas)", tersedia: true },
           ].map((l) => (
             <div key={l.kode} className="p-3 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-between">
               <div>
                 <p className="font-bold text-gray-900">{l.kode} — {l.nama}</p>
                 <p className="text-[11px] text-gray-500">{l.isi}</p>
               </div>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${l.tersedia ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
+                {l.tersedia ? "Tersedia" : "Segera hadir"}
+              </span>
             </div>
           ))}
         </div>

@@ -19,6 +19,7 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { useSipandu } from "@/lib/data-store";
 import { useRTDistribution } from "@/lib/dashboard-helpers";
+import { buildTrenPersen6Bulan } from "@/lib/tren6bulan";
 
 export default function KadesDashboardPage() {
   const { currentUser } = useAuth();
@@ -49,17 +50,11 @@ export default function KadesDashboardPage() {
   const stuntingRate = balitaCount > 0 ? ((stuntingCount / balitaCount) * 100).toFixed(1) : "0.0";
   const rtData = useRTDistribution(data.keluarga, data.anggota, allVisits);
 
-  // Stunting 6-Month Reduction Trend
-  const stuntingTrend = [
-    { bulan: "Mar", rate: 16.2 },
-    { bulan: "Apr", rate: 15.0 },
-    { bulan: "Mei", rate: 14.1 },
-    { bulan: "Jun", rate: 13.2 },
-    { bulan: "Jul", rate: 12.4 },
-    { bulan: "Ags", rate: Number(stuntingRate) || 11.8 },
-  ];
+  // Tren penurunan stunting 6 bulan: bulan berjalan = data riil, sisanya ilustrasi
+  const stuntingTrend = buildTrenPersen6Bulan(Number(stuntingRate) || 0);
+  const adaHistoriStunting = stuntingTrend.some((d) => !d.isIlustrasi);
 
-  // APBDes Health Budget Allocation
+  // APBDes: angka bersumber dari input manual desa (bukan terekam sistem) -> ditandai ilustrasi
   const apbdes = {
     totalAnggaran: 52000000,
     terealisasi: 48600000,
@@ -86,7 +81,7 @@ export default function KadesDashboardPage() {
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-1" />
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
-              Selamat Datang, {currentUser?.nama_lengkap || "Drs. H. Bambang Sudarsono"}
+              Selamat Datang, {currentUser?.nama_lengkap}
             </h1>
             <p className="text-emerald-100 text-xs sm:text-sm max-w-2xl leading-relaxed">
               Ikhtisar Kesehatan Masyarakat, Angka Prevalensi Stunting, Realisasi Alokasi APBDes Bidang Kesehatan, serta Sinkronisasi Satu Data Kependudukan SINDUKSADATI.
@@ -142,8 +137,8 @@ export default function KadesDashboardPage() {
           <p className="text-xs font-semibold text-gray-400 uppercase">Prevalensi Stunting</p>
           <div className="flex items-baseline gap-2 mt-1">
             <h3 className="text-3xl font-bold text-amber-600">{stuntingRate}%</h3>
-            <span className="text-xs text-emerald-600 font-bold flex items-center">
-              <TrendingDown className="w-3.5 h-3.5 mr-0.5" /> -4.4%
+            <span className="text-xs text-amber-600 font-bold flex items-center">
+              <TrendingDown className="w-3.5 h-3.5 mr-0.5" /> Real-time
             </span>
           </div>
           <p className="text-xs text-gray-500 mt-1">{stuntingCount} Kasus dari {balitaCount} Balita</p>
@@ -191,8 +186,8 @@ export default function KadesDashboardPage() {
                   <p className="text-xs text-gray-500">Evaluasi efektivitas intervensi gizi Dana Desa 2026</p>
                 </div>
               </div>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
-                Target RPJMD: &lt; 14%
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${adaHistoriStunting ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
+                {adaHistoriStunting ? "Bulan Berjalan Riil" : "Ilustrasi"}
               </span>
             </div>
 
@@ -208,18 +203,26 @@ export default function KadesDashboardPage() {
                   const isCurrent = i === stuntingTrend.length - 1;
                   return (
                     <div key={i} className="flex-1 flex flex-col items-center justify-end h-full gap-1.5">
-                      <span className={`text-[11px] font-bold ${isCurrent ? "text-emerald-700" : "text-gray-600"}`}>
-                        {d.rate}%
-                      </span>
+                      {d.pct !== null ? (
+                        <span className={`text-[11px] font-bold ${isCurrent ? "text-emerald-700" : "text-gray-600"}`}>
+                          {d.pct}%
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-bold text-amber-600">Ilus.</span>
+                      )}
                       <div className="w-full h-36 flex items-end justify-center">
-                        <div
-                          className={`w-full max-w-[36px] rounded-t-lg transition-all duration-500 ${
-                            isCurrent
-                              ? "bg-emerald-600 hover:bg-emerald-700 shadow-md shadow-emerald-600/20"
-                              : "bg-amber-400 hover:bg-amber-500"
-                          }`}
-                          style={{ height: `${(d.rate / 25) * 100}%` }}
-                        />
+                        {d.pct !== null ? (
+                          <div
+                            className="w-full max-w-[36px] rounded-t-lg transition-all duration-500 bg-emerald-600 hover:bg-emerald-700 shadow-md shadow-emerald-600/20"
+                            style={{ height: `${(d.pct / 25) * 100}%` }}
+                          />
+                        ) : (
+                          <div
+                            className="w-full max-w-[36px] rounded-t-lg border-2 border-dashed border-amber-300 bg-amber-50"
+                            style={{ height: `${(Number(stuntingRate) / 25) * 100}%` }}
+                            title="Ilustrasi: histori bulanan belum terekam"
+                          />
+                        )}
                       </div>
                       <span className={`text-[11px] font-semibold ${isCurrent ? "text-emerald-900 font-bold" : "text-gray-400"}`}>
                         {d.bulan}
@@ -233,7 +236,9 @@ export default function KadesDashboardPage() {
 
           <div className="pt-4 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
             <span>Standar Penilaian: E-PPGBM Kemenkes RI</span>
-            <span className="text-emerald-700 font-bold">Turun Signifikan di Bawah Target</span>
+            <span className="text-amber-700 font-bold">
+              {adaHistoriStunting ? "Cek tren riil bulan berjalan" : "Histori ilustrasi — bulan berjalan riil"}
+            </span>
           </div>
         </div>
 
@@ -250,8 +255,8 @@ export default function KadesDashboardPage() {
                   <p className="text-xs text-gray-500">Alokasi khusus Dana Desa untuk Posyandu & Gizi Masyarakat</p>
                 </div>
               </div>
-              <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full">
-                {apbdes.persen}% Terserap
+              <span className="text-xs font-bold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full">
+                Ilustrasi · Input Manual Desa
               </span>
             </div>
 
@@ -279,7 +284,7 @@ export default function KadesDashboardPage() {
 
           <div className="pt-4 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
             <span>Sisa Anggaran: Rp {(apbdes.totalAnggaran - apbdes.terealisasi).toLocaleString("id-ID")}</span>
-            <span className="text-emerald-700 font-semibold">Audit BPD: Wajar Tanpa Pengecualian</span>
+            <span className="text-amber-700 font-semibold">Angka Ilustrasi · Audit BPD Menyusul</span>
           </div>
         </div>
       </div>

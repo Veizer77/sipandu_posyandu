@@ -8,6 +8,7 @@ import { Link } from "react-router-dom";
 import { CalendarX2, Calendar, PlayCircle, ArrowLeft, Loader2 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useSipandu } from "@/lib/data-store";
+import { getRoleMenuPath, getRoleDashboardPath } from "@/lib/role-routes";
 
 export function useSesiAktif(): any | null {
   const { data } = useSipandu();
@@ -35,13 +36,7 @@ export default function ButuhSesi({ children }: { children: React.ReactNode }) {
 
   // Jika tidak ada sesi aktif, tampilkan gate info ramah pengguna tanpa auto-aktivasi diam-diam
   if (!sesiAktif) {
-    const rolePrefix =
-      currentUser?.peran === "super_admin"
-        ? "/admin"
-        : currentUser?.peran === "bidan"
-        ? "/bidan"
-        : "/kader";
-    const jadwalUrl = `${rolePrefix}/jadwal`;
+    const jadwalUrl = getRoleMenuPath("/posyandu", currentUser?.peran || "kader");
 
     const handleMulaiSesiHariIni = async () => {
       setIsStarting(true);
@@ -100,7 +95,7 @@ export default function ButuhSesi({ children }: { children: React.ReactNode }) {
               Kelola Jadwal
             </Link>
             <Link
-              to={`${rolePrefix}/dashboard`}
+              to={getRoleDashboardPath(currentUser?.peran || "kader")}
               className="w-full sm:w-auto px-5 py-2.5 text-gray-500 hover:text-gray-700 font-semibold rounded-xl text-sm transition flex items-center justify-center gap-1"
             >
               <ArrowLeft className="w-4 h-4" />

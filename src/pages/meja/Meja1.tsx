@@ -2,11 +2,12 @@
  * SIPANDU - Meja 1: Registrasi & Presensi Digital
  * Identik dengan renderMeja1RegistrasiView legacy.
  */
-import React, { useMemo, useState } from "react";
+import React, { useDeferredValue, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import confetti from "canvas-confetti";
 import { Search, LogIn } from "lucide-react";
 import { MejaStepper, CategoryBadge } from "@/components/meja/MejaShared";
+import { Avatar } from "@/components/Avatar";
 import { useAuth } from "@/lib/auth-context";
 import { getRolePrefix } from "@/lib/role-routes";
 import { useSipandu } from "@/lib/data-store";
@@ -18,19 +19,33 @@ export default function Meja1() {
   const rolePrefix = getRolePrefix(currentRole);
   const { data, checkInPeserta } = useSipandu();
   const [query, setQuery] = useState("");
+  const debouncedQuery = useDeferredValue(query);
 
   const sesiAktif = data.jadwal.find((j: any) => j.status === "aktif");
   const kunjunganAktif = data.kunjunganAktif;
   const totalSasaran = data.anggota.filter((a: any) => a.status_aktif && a.kategori !== "umum").length;
   const belumHadirCount = Math.max(0, totalSasaran - kunjunganAktif.length);
 
+  // Map keluarga_id -> nomor_kk agar pencarian bisa via Nomor KK
+  const kkById = useMemo(() => {
+    const m = new Map<string, string>();
+    data.keluarga.forEach((k: any) => m.set(k.id, k.nomor_kk));
+    return m;
+  }, [data.keluarga]);
+
   const results = useMemo(() => {
+    const q = debouncedQuery.trim().toLowerCase();
     const list = data.anggota.filter((a: any) => {
-      if (!query) return a.kategori !== "umum";
-      return a.nama.toLowerCase().includes(query.toLowerCase()) || (a.nik && a.nik.includes(query));
+      if (!q) return a.kategori !== "umum";
+      const kk = kkById.get(a.keluarga_id) || "";
+      return (
+        a.nama.toLowerCase().includes(q) ||
+        (a.nik && a.nik.includes(q)) ||
+        kk.includes(q)
+      );
     });
     return list.slice(0, 8);
-  }, [query, data.anggota]);
+  }, [debouncedQuery, data.anggota, kkById]);
 
   async function checkIn(anggota: any) {
     await checkInPeserta(anggota.id);
@@ -103,11 +118,7 @@ export default function Meja1() {
                     className={`bg-white p-4 rounded-2xl border ${isAlreadyCheckedIn ? "border-green-300 bg-green-50/20" : "border-gray-100"} shadow-sm hover:shadow transition flex flex-col sm:flex-row sm:items-center justify-between gap-4`}
                   >
                     <div className="flex items-center gap-3.5">
-                      <img
-                        src={a.foto || "https://images.unsplash.com/photo-1502086223501-7ea6ecd79368?w=150"}
-                        alt={a.nama}
-                        className="w-14 h-14 rounded-2xl object-cover border border-gray-200"
-                      />
+                      <Avatar nama={a.nama} className="w-14 h-14 rounded-2xl text-lg" />
                       <div>
                         <div className="flex items-center gap-2 mb-1">
                           <CategoryBadge kategori={a.kategori} />

@@ -318,6 +318,13 @@ const WHO_ENGINE = {
     };
   },
 
+  // Median berat badan menurut usia (WHO 2006 weight-for-age), dalam kg.
+  // Dipakai sebagai garis acuan "Median WHO" pada grafik tren pertumbuhan.
+  medianBeratUsia(usiaBulan: number, jenisKelamin: string = "L"): number {
+    const tableWFA = jenisKelamin === "L" ? this.wfaBoys : this.wfaGirls;
+    return this.interpolateLMS(tableWFA, usiaBulan).M;
+  },
+
   // Calculate full anthropometry analysis
   analisisBalita(
     usiaBulan: number,
@@ -678,6 +685,7 @@ export const deteksiRisikoSesi = WHO_ENGINE.deteksiRisikoSesi.bind(WHO_ENGINE);
 export const hitungUsia = WHO_ENGINE.hitungUsia.bind(WHO_ENGINE);
 export const klasifikasiSasaran = WHO_ENGINE.klasifikasiSasaran.bind(WHO_ENGINE);
 export const hitungHPL = WHO_ENGINE.hitungHPL.bind(WHO_ENGINE);
+export const medianBeratUsia = WHO_ENGINE.medianBeratUsia.bind(WHO_ENGINE);
 export const interpretasiBBU = WHO_ENGINE.interpretasiBBU.bind(WHO_ENGINE);
 export const interpretasiTBU = WHO_ENGINE.interpretasiTBU.bind(WHO_ENGINE);
 export const interpretasiBBTB = WHO_ENGINE.interpretasiBBTB.bind(WHO_ENGINE);

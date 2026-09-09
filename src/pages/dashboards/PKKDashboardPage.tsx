@@ -18,6 +18,7 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { useSipandu } from "@/lib/data-store";
 import { useRTDistribution } from "@/lib/dashboard-helpers";
+import { buildTrenPersen6Bulan } from "@/lib/tren6bulan";
 
 export default function PKKDashboardPage() {
   const { currentUser } = useAuth();
@@ -61,15 +62,12 @@ export default function PKKDashboardPage() {
 
   const rtData = useRTDistribution(data.keluarga, data.anggota, allVisits);
 
-  // 6 Bulan Tren D/S Data
-  const trendData = [
-    { bulan: "Mar", pct: 74 },
-    { bulan: "Apr", pct: 76 },
-    { bulan: "Mei", pct: 79 },
-    { bulan: "Jun", pct: 81 },
-    { bulan: "Jul", pct: 84 },
-    { bulan: "Ags", pct: Math.max(82, Math.min(96, Math.round(Number(persenDS) || 88))) },
-  ];
+  // Tren D/S 6 bulan: bulan berjalan = data riil (persenDS), sisanya ilustrasi
+  const trendData = buildTrenPersen6Bulan(Number(persenDS) || 0);
+  const rtTertinggi = rtData.reduce(
+    (best: any, r: any) => (!best || r.pct > best.pct ? r : best),
+    null as any
+  );
 
   return (
     <div className="p-4 sm:p-8 space-y-6">
@@ -85,7 +83,7 @@ export default function PKKDashboardPage() {
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-1" />
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
-              Selamat Datang, {currentUser?.nama_lengkap || "Ny. Sulastri"}
+              Selamat Datang, {currentUser?.nama_lengkap}
             </h1>
             <p className="text-purple-100 text-xs sm:text-sm max-w-2xl leading-relaxed">
               Monitoring Kinerja Posyandu ILP, Partisipasi Kehadiran Warga (D/S), Distribusi PMT Pemulihan Bahan Pangan Lokal, dan Intervensi Pencegahan Stunting di Dusun Krajan.
@@ -137,7 +135,10 @@ export default function PKKDashboardPage() {
           </div>
           <p className="text-xs text-gray-500 mt-1">Intervensi Makanan Lokal Bergizi</p>
           <div className="w-full bg-purple-100 h-1.5 rounded-full mt-3 overflow-hidden">
-            <div className="bg-purple-600 h-full rounded-full" style={{ width: "85%" }} />
+            <div
+              className="bg-purple-600 h-full rounded-full"
+              style={{ width: `${Math.min(100, Number(((pmtCount / Math.max(1, totalSasaran)) * 100).toFixed(0)))}%` }}
+            />
           </div>
         </div>
 
@@ -181,8 +182,8 @@ export default function PKKDashboardPage() {
                   <p className="text-xs text-gray-500">Evaluasi efektivitas gerakan kader Dasawisma PKK</p>
                 </div>
               </div>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
-                Target Nasional &ge; 85%
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${trendData.some((d) => !d.isIlustrasi) ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
+                {trendData.some((d) => !d.isIlustrasi) ? "Bulan Berjalan Riil" : "Ilustrasi"}
               </span>
             </div>
 
@@ -198,18 +199,26 @@ export default function PKKDashboardPage() {
                   const isCurrent = i === trendData.length - 1;
                   return (
                     <div key={i} className="flex-1 flex flex-col items-center justify-end h-full gap-1.5">
-                      <span className={`text-[11px] font-bold ${isCurrent ? "text-purple-700" : "text-gray-600"}`}>
-                        {d.pct}%
-                      </span>
+                      {d.pct !== null ? (
+                        <span className={`text-[11px] font-bold ${isCurrent ? "text-purple-700" : "text-gray-600"}`}>
+                          {d.pct}%
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-bold text-amber-600">Ilus.</span>
+                      )}
                       <div className="w-full h-36 flex items-end justify-center">
-                        <div
-                          className={`w-full max-w-[36px] rounded-t-lg transition-all duration-500 ${
-                            isCurrent
-                              ? "bg-purple-600 hover:bg-purple-700 shadow-md shadow-purple-600/20"
-                              : "bg-purple-200 hover:bg-purple-300"
-                          }`}
-                          style={{ height: `${(d.pct / 100) * 100}%` }}
-                        />
+                        {d.pct !== null ? (
+                          <div
+                            className="w-full max-w-[36px] rounded-t-lg transition-all duration-500 bg-purple-600 hover:bg-purple-700 shadow-md shadow-purple-600/20"
+                            style={{ height: `${(d.pct / 100) * 100}%` }}
+                          />
+                        ) : (
+                          <div
+                            className="w-full max-w-[36px] rounded-t-lg border-2 border-dashed border-purple-300 bg-purple-50"
+                            style={{ height: `${(Number(persenDS) / 100) * 100}%` }}
+                            title="Ilustrasi: histori bulanan belum terekam"
+                          />
+                        )}
                       </div>
                       <span className={`text-[11px] font-semibold ${isCurrent ? "text-purple-900 font-bold" : "text-gray-400"}`}>
                         {d.bulan}
@@ -223,7 +232,9 @@ export default function PKKDashboardPage() {
 
           <div className="pt-4 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
             <span>Metode: Buku Register Posyandu & SIM PKK</span>
-            <span className="text-emerald-600 font-bold">Kenaikan +14% sejak Maret</span>
+            <span className="text-amber-600 font-bold">
+              {rtTertinggi ? `RT Tertinggi: ${rtTertinggi.label} (${rtTertinggi.pct}%)` : "Belum ada data RT"}
+            </span>
           </div>
         </div>
 
@@ -270,7 +281,9 @@ export default function PKKDashboardPage() {
 
           <div className="pt-4 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
             <span>Koordinasi: Ketua Kelompok Dasawisma</span>
-            <span className="text-purple-700 font-semibold">RT 02 Tertinggi (88%)</span>
+            <span className="text-purple-700 font-semibold">
+              {rtTertinggi ? `RT Tertinggi: ${rtTertinggi.label} (${rtTertinggi.pct}%)` : "Belum ada data RT"}
+            </span>
           </div>
         </div>
       </div>

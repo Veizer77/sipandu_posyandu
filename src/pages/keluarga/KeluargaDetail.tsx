@@ -10,6 +10,7 @@ import { useSipandu } from "@/lib/data-store";
 import { hitungUsia, klasifikasiSasaran, hitungHPL } from "@/utils/zscoreCalculator";
 import { statusImunisasi, type ImunisasiStatusItem } from "@/utils/jadwalImunisasi";
 import { CategoryBadge } from "@/components/meja/MejaShared";
+import { Avatar } from "@/components/Avatar";
 import { maskNik, formatTanggalSingkat } from "@/lib/utils";
 
 export function KeluargaDetail() {
@@ -71,7 +72,7 @@ export function KeluargaDetail() {
                 to={`/anggota/${a.id}`}
                 className="flex items-center gap-3 p-3 rounded-xl border border-gray-200 hover:bg-gray-50 transition"
               >
-                <img src={a.foto || "https://images.unsplash.com/photo-1502086223501-7ea6ecd79368?w=150"} className="w-10 h-10 rounded-xl object-cover" />
+                <Avatar nama={a.nama} className="w-10 h-10 rounded-xl" />
                 <div className="flex-1">
                   <p className="font-bold text-sm text-gray-900">{a.nama}</p>
                   <p className="text-[11px] text-gray-500">
@@ -148,7 +149,7 @@ export function AnggotaDetail() {
       </div>
 
       <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm flex flex-col sm:flex-row gap-5">
-        <img src={a.foto || "https://images.unsplash.com/photo-1502086223501-7ea6ecd79368?w=150"} className="w-24 h-24 rounded-3xl object-cover border border-gray-200 shadow-sm" />
+        <Avatar nama={a.nama} className="w-24 h-24 rounded-3xl text-2xl" />
         <div className="flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <CategoryBadge kategori={a.kategori} />

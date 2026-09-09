@@ -44,7 +44,7 @@ interface SipanduContextValue {
   updateKeluarga: (id: string, patch: any) => Promise<void>;
   updateAnggota: (id: string, patch: any) => Promise<void>;
   selesaikanKehamilan: (anggotaId: string) => Promise<void>;
-   verifikasiKunjungan: (kunjunganId: string, status?: "valid" | "draft" | "diperiksa") => Promise<void>;
+   verifikasiKunjungan: (kunjunganId: string, status?: "valid" | "draft" | "diperiksa", catatan?: string) => Promise<void>;
    bukaKunciKunjungan: (kunjunganId: string) => Promise<void>;
   updateStatusRisiko: (risikoId: string, status: "aktif" | "ditangani" | "diabaikan") => Promise<void>;
    verifikasiBulkKunjungan: (kunjunganIds: string[], status?: "valid" | "draft" | "diperiksa") => Promise<void>;
@@ -520,7 +520,7 @@ export function SipanduDataProvider({ children }: { children: React.ReactNode })
       status_aktif: true,
       status_hamil: Boolean(anggotaData.status_hamil),
       hpht: anggotaData.hpht || null,
-      foto: anggotaData.foto || "https://images.unsplash.com/photo-1502086223501-7ea6ecd79368?w=150",
+      foto: anggotaData.foto || "",
     };
 
     setData((prev) => ({
@@ -768,31 +768,41 @@ export function SipanduDataProvider({ children }: { children: React.ReactNode })
     }
   }, [data.jadwal, addAuditLog]);
 
-  const verifikasiKunjungan = useCallback(async (kunjunganId: string, status: "valid" | "draft" | "diperiksa" = "valid") => {
-    setData((prev) => {
-      const updated = prev.kunjunganAktif.map((k) => {
-        if (k.id === kunjunganId) {
-          return {
-            ...k,
-            status_verifikasi: status,
-            waktu_verifikasi: new Date().toISOString(),
-          };
-        }
-        return k;
+  const verifikasiKunjungan = useCallback(
+    async (kunjunganId: string, status: "valid" | "draft" | "diperiksa" = "valid", catatan?: string) => {
+      setData((prev) => {
+        const updated = prev.kunjunganAktif.map((k) => {
+          if (k.id === kunjunganId) {
+            const next: any = {
+              ...k,
+              status_verifikasi: status,
+              waktu_verifikasi: new Date().toISOString(),
+            };
+            if (status === "draft" && catatan) next.catatan_kembalikan = catatan;
+            return next;
+          }
+          return k;
+        });
+        return { ...prev, kunjunganAktif: updated };
       });
-      return { ...prev, kunjunganAktif: updated };
-    });
 
-    if (dbService.isConfigured()) {
-      try {
-        await dbService.verifyKunjungan(kunjunganId, status);
-      } catch (e) {
-        console.warn("Failed to persist verification to InsForge DB:", e);
+      if (dbService.isConfigured()) {
+        try {
+          await dbService.verifyKunjungan(kunjunganId, status);
+        } catch (e) {
+          console.warn("Failed to persist verification to InsForge DB:", e);
+        }
       }
-    }
 
-    addAuditLog("UPDATE", "verifikasi_bidan", kunjunganId, `Validasi status kunjungan: ${status}`);
-  }, [addAuditLog]);
+      addAuditLog(
+        "UPDATE",
+        "verifikasi_bidan",
+        kunjunganId,
+        catatan ? `Validasi status kunjungan: ${status} — Catatan: ${catatan}` : `Validasi status kunjungan: ${status}`
+      );
+    },
+    [addAuditLog]
+  );
 
   // (BUG #16) Bidan/Super Admin dapat membuka kunci kunjungan yang sudah tervalidasi
   // dengan mengembalikan status_verifikasi ke "draft" agar bisa diedit kembali.

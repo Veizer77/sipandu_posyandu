@@ -5,6 +5,7 @@
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { insforge, insforgeConfigured } from "./insforge";
+import { SIPANDU_SEED } from "./seedData";
 import type { User, UserRole } from "@/types";
 
 export const ROLE_LABEL: Record<UserRole, string> = {
@@ -182,7 +183,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (insforgeUser) return insforgeUser;
     return {
       id: "",
-      nama_lengkap: "Pengguna SIPANDU",
+      nama_lengkap: SIPANDU_SEED.persona[currentRole] || "Pengguna SIPANDU",
       peran: currentRole,
       email: "",
       posyandu_id: "posyandu-flamboyan-rw06",
