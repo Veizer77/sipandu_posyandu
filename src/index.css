@@ -1,0 +1,231 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* SIPANDU Design System — identik dengan css/custom.css versi legacy.
+   Palet resmi logo: Primary #0284c7 (Cerulean), Secondary #16a34a (Herbal). */
+
+:root {
+  --color-primary: #0284c7;
+  --color-primary-hover: #0369a1;
+  --color-primary-light: #e0f2fe;
+  --color-primary-50: #f0f9ff;
+
+  --color-secondary: #16a34a;
+  --color-secondary-hover: #15803d;
+  --color-secondary-light: #dcfce7;
+  --color-secondary-50: #f0fdf4;
+
+  --color-status-baik: #16a34a;
+  --color-status-kurang: #d97706;
+  --color-status-buruk: #dc2626;
+  --color-status-lebih: #4f46e5;
+
+  --color-risiko-danger: #dc2626;
+  --color-risiko-warning: #d97706;
+  --color-risiko-info: #0284c7;
+
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-border: #e2e8f0;
+  --color-text: #0f172a;
+  --color-muted: #64748b;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Touch targets >= 44x44px untuk aksesibilitas */
+button,
+input[type="button"],
+input[type="submit"],
+.clickable-target {
+  min-height: 44px;
+}
+
+/* Minimum 16px font size pada input agar tidak auto-zoom di iOS */
+input,
+select,
+textarea {
+  font-size: 16px !important;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Sidebar Scrollbar — Ultra Subtle & Independent */
+#app-sidebar::-webkit-scrollbar {
+  width: 4px;
+}
+#app-sidebar::-webkit-scrollbar-track {
+  background: transparent;
+}
+#app-sidebar::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 9999px;
+}
+#app-sidebar::-webkit-scrollbar-thumb:hover {
+  background: #cbd5e1;
+}
+
+/* Glassmorphism Header */
+.glass-header {
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Print Styling untuk Laporan Resmi */
+@media print {
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    font-size: 11pt !important;
+  }
+
+  .no-print,
+  #app-navbar,
+  #app-sidebar,
+  #bottom-nav,
+  #role-banner,
+  .print-hide {
+    display: none !important;
+  }
+
+  #main-content {
+    margin: 0 !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  .printable-card {
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+
+  table {
+    page-break-inside: auto;
+    width: 100% !important;
+    border-collapse: collapse !important;
+  }
+
+  tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  th,
+  td {
+    border: 1px solid #334155 !important;
+    padding: 6px 8px !important;
+    color: #000000 !important;
+  }
+
+  .kop-surat {
+    display: block !important;
+    margin-bottom: 20px !important;
+    border-bottom: 3px double #000000 !important;
+    padding-bottom: 12px !important;
+  }
+
+  /* R3: laporan pecah halaman rapi per bagian (katalog/nav sudah .no-print) */
+  .printable-card .mb-6 {
+    page-break-inside: avoid;
+  }
+  .printable-card .kop-surat,
+  .printable-card > div:first-child {
+    page-break-after: avoid;
+  }
+  h4 {
+    page-break-after: avoid !important;
+  }
+}
+
+@media screen {
+  .print-only {
+    display: none !important;
+  }
+}
+
+/* Stepper Navigation */
+.stepper-meja {
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.stepper-meja::-webkit-scrollbar {
+  display: none;
+}
+
+/* Badges aligned with logo colors */
+.badge-status-baik {
+  background-color: #dcfce7;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}
+
+.badge-status-kurang {
+  background-color: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.badge-status-buruk {
+  background-color: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.badge-status-lebih {
+  background-color: #e0e7ff;
+  color: #4338ca;
+  border: 1px solid #c7d2fe;
+}
+
+.badge-risiko-2t {
+  background-color: #ffedd5;
+  color: #c2410c;
+  border: 1px solid #fed7aa;
+}
+
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(0.98); }
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 4s ease-in-out infinite;
+}
