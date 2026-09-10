@@ -388,9 +388,11 @@ export default function Login() {
                       >
                         Kata Sandi
                       </label>
-                      <span className="text-[10px] text-slate-400">
-                        Default: <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-600 font-mono">password123</code>
-                      </span>
+                      {DEMO_MODE && (
+                        <span className="text-[10px] text-slate-400">
+                          Default: <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-600 font-mono">password123</code>
+                        </span>
+                      )}
                     </div>
                     <div className="relative">
                       <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
@@ -460,61 +462,63 @@ export default function Login() {
                 </form>
 
                 {/* ================= QUICK ROLE SELECTOR (RBAC TERMINAL) ================= */}
-                <div className="pt-3 border-t border-slate-100 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <p className="text-[11px] font-bold text-slate-800 tracking-tight">
-                      Akses Cepat Kredensial Resmi Petugas
-                    </p>
-                    <span className="text-[9px] font-bold text-sky-700 bg-sky-100/70 px-1.5 py-0.5 rounded">
-                      5 Peran
-                    </span>
-                  </div>
+                {DEMO_MODE && (
+                  <div className="pt-3 border-t border-slate-100 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] font-bold text-slate-800 tracking-tight">
+                        Akses Cepat Kredensial Resmi Petugas
+                      </p>
+                      <span className="text-[9px] font-bold text-sky-700 bg-sky-100/70 px-1.5 py-0.5 rounded">
+                        5 Peran
+                      </span>
+                    </div>
 
-                  {/* Responsive Role Cards Grid — Compact */}
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {ROLES_DATA.map((r, idx) => {
-                      const Icon = r.icon;
-                      const isSelected = selectedRole === r.role;
-                      return (
-                        <div
-                          key={r.role}
-                          onClick={() => handleSelectRole(r.role)}
-                          className={`group cursor-pointer text-left p-1.5 sm:p-2 rounded-xl border transition-all duration-200 flex items-center justify-between gap-1.5 ${idx === 4 ? "col-span-2 sm:col-span-1" : ""
-                            } ${isSelected
-                              ? `${r.activeRing} ring-1.5 shadow-2xs`
-                              : `${r.bgLight} ${r.borderColor}`
-                            }`}
-                        >
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <div
-                              className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${r.badgeBg} ${r.accentColor}`}
-                            >
-                              <Icon className="w-3 h-3" />
-                            </div>
-                            <div className="min-w-0">
-                              <p className="text-[11px] font-bold text-slate-800 truncate leading-tight">
-                                {r.title}
-                              </p>
-                              <p className="text-[9px] text-slate-500 truncate leading-none mt-0.5">
-                                {r.scope}
-                              </p>
-                            </div>
-                          </div>
-
-                          {/* Direct Instant Login Button */}
-                          <button
-                            type="button"
-                            onClick={(e) => handleDirectRoleLogin(r.role, e)}
-                            title={`Masuk langsung sebagai ${r.title}`}
-                            className="shrink-0 px-1.5 py-0.5 rounded bg-white hover:bg-slate-900 hover:text-white text-[9px] font-bold text-slate-700 border border-slate-200 shadow-2xs transition active:scale-95"
+                    {/* Responsive Role Cards Grid — Compact */}
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {ROLES_DATA.map((r, idx) => {
+                        const Icon = r.icon;
+                        const isSelected = selectedRole === r.role;
+                        return (
+                          <div
+                            key={r.role}
+                            onClick={() => handleSelectRole(r.role)}
+                            className={`group cursor-pointer text-left p-1.5 sm:p-2 rounded-xl border transition-all duration-200 flex items-center justify-between gap-1.5 ${idx === 4 ? "col-span-2 sm:col-span-1" : ""
+                              } ${isSelected
+                                ? `${r.activeRing} ring-1.5 shadow-2xs`
+                                : `${r.bgLight} ${r.borderColor}`
+                              }`}
                           >
-                            Masuk ↗
-                          </button>
-                        </div>
-                      );
-                    })}
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <div
+                                className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${r.badgeBg} ${r.accentColor}`}
+                              >
+                                <Icon className="w-3 h-3" />
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-[11px] font-bold text-slate-800 truncate leading-tight">
+                                  {r.title}
+                                </p>
+                                <p className="text-[9px] text-slate-500 truncate leading-none mt-0.5">
+                                  {r.scope}
+                                </p>
+                              </div>
+                            </div>
+
+                            {/* Direct Instant Login Button */}
+                            <button
+                              type="button"
+                              onClick={(e) => handleDirectRoleLogin(r.role, e)}
+                              title={`Masuk langsung sebagai ${r.title}`}
+                              className="shrink-0 px-1.5 py-0.5 rounded bg-white hover:bg-slate-900 hover:text-white text-[9px] font-bold text-slate-700 border border-slate-200 shadow-2xs transition active:scale-95"
+                            >
+                              Masuk ↗
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Footer Micro Note */}
                 <div className="pt-1">

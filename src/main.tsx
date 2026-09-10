@@ -1,4 +1,4 @@
-import React from "react";
+import React, { Suspense } from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
@@ -7,32 +7,39 @@ import { getRoleMenuPath, getRoleDashboardPath } from "@/lib/role-routes";
 import AppShell from "@/components/layout/AppShell";
 import RoleGuard from "@/components/layout/RoleGuard";
 import ButuhSesi from "@/components/layout/ButuhSesi";
-import LandingPage from "@/pages/LandingPage";
-import Login from "@/pages/Login";
-import Dashboard from "@/pages/Dashboard";
-import KaderDashboardPage from "@/pages/dashboards/KaderDashboardPage";
-import BidanDashboardPage from "@/pages/dashboards/BidanDashboardPage";
-import PKKDashboardPage from "@/pages/dashboards/PKKDashboardPage";
-import KadesDashboardPage from "@/pages/dashboards/KadesDashboardPage";
-import AdminDashboardPage from "@/pages/dashboards/AdminDashboardPage";
-import Meja1 from "@/pages/meja/Meja1";
-import Meja2 from "@/pages/meja/Meja2";
-import Meja3 from "@/pages/meja/Meja3";
-import Meja4 from "@/pages/meja/Meja4";
-import Meja5 from "@/pages/meja/Meja5";
-import Rekap from "@/pages/meja/Rekap";
-import KeluargaList from "@/pages/keluarga/KeluargaList";
-import { KeluargaTambah, AnggotaTambah } from "@/pages/keluarga/KeluargaTambah";
-import { KeluargaEdit, AnggotaEdit } from "@/pages/keluarga/KeluargaEdit";
-import { KeluargaDetail, AnggotaDetail } from "@/pages/keluarga/KeluargaDetail";
-import PosyanduJadwal from "@/pages/PosyanduJadwal";
-import BidanVerifikasi from "@/pages/monitoring/BidanVerifikasi";
-import BidanRisiko from "@/pages/monitoring/BidanRisiko";
-import BidanImunisasi from "@/pages/monitoring/BidanImunisasi";
-import Laporan from "@/pages/Laporan";
-import IntegrasiSinduksadati from "@/pages/IntegrasiSinduksadati";
-import { Pengaturan, Pengguna, AuditLog } from "@/pages/admin/Pengaturan";
+const LandingPage = React.lazy(() => import("@/pages/LandingPage"));
+const Login = React.lazy(() => import("@/pages/Login"));
+const Dashboard = React.lazy(() => import("@/pages/Dashboard"));
+const KaderDashboardPage = React.lazy(() => import("@/pages/dashboards/KaderDashboardPage"));
+const BidanDashboardPage = React.lazy(() => import("@/pages/dashboards/BidanDashboardPage"));
+const PKKDashboardPage = React.lazy(() => import("@/pages/dashboards/PKKDashboardPage"));
+const KadesDashboardPage = React.lazy(() => import("@/pages/dashboards/KadesDashboardPage"));
+const AdminDashboardPage = React.lazy(() => import("@/pages/dashboards/AdminDashboardPage"));
+const Meja1 = React.lazy(() => import("@/pages/meja/Meja1"));
+const Meja2 = React.lazy(() => import("@/pages/meja/Meja2"));
+const Meja3 = React.lazy(() => import("@/pages/meja/Meja3"));
+const Meja4 = React.lazy(() => import("@/pages/meja/Meja4"));
+const Meja5 = React.lazy(() => import("@/pages/meja/Meja5"));
+const Rekap = React.lazy(() => import("@/pages/meja/Rekap"));
+const KeluargaList = React.lazy(() => import("@/pages/keluarga/KeluargaList"));
+const KeluargaTambah = React.lazy(() => import("@/pages/keluarga/KeluargaTambah").then(m => ({ default: m.KeluargaTambah })));
+const AnggotaTambah = React.lazy(() => import("@/pages/keluarga/KeluargaTambah").then(m => ({ default: m.AnggotaTambah })));
+const KeluargaEdit = React.lazy(() => import("@/pages/keluarga/KeluargaEdit").then(m => ({ default: m.KeluargaEdit })));
+const AnggotaEdit = React.lazy(() => import("@/pages/keluarga/KeluargaEdit").then(m => ({ default: m.AnggotaEdit })));
+const KeluargaDetail = React.lazy(() => import("@/pages/keluarga/KeluargaDetail").then(m => ({ default: m.KeluargaDetail })));
+const AnggotaDetail = React.lazy(() => import("@/pages/keluarga/KeluargaDetail").then(m => ({ default: m.AnggotaDetail })));
+const PosyanduJadwal = React.lazy(() => import("@/pages/PosyanduJadwal"));
+const BidanVerifikasi = React.lazy(() => import("@/pages/monitoring/BidanVerifikasi"));
+const BidanRisiko = React.lazy(() => import("@/pages/monitoring/BidanRisiko"));
+const BidanImunisasi = React.lazy(() => import("@/pages/monitoring/BidanImunisasi"));
+const Laporan = React.lazy(() => import("@/pages/Laporan"));
+const IntegrasiSinduksadati = React.lazy(() => import("@/pages/IntegrasiSinduksadati"));
+const Pengaturan = React.lazy(() => import("@/pages/admin/Pengaturan").then(m => ({ default: m.Pengaturan })));
+const Pengguna = React.lazy(() => import("@/pages/admin/Pengaturan").then(m => ({ default: m.Pengguna })));
+const AuditLog = React.lazy(() => import("@/pages/admin/Pengaturan").then(m => ({ default: m.AuditLog })));
 import "./index.css";
+
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 function Protected({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, initializing } = useAuth();
@@ -82,10 +89,12 @@ function RoleRedirect({ path }: { path: string }) {
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <AuthProvider>
-      <SipanduDataProvider>
-        <BrowserRouter>
-          <Routes>
+    <ErrorBoundary>
+      <AuthProvider>
+        <SipanduDataProvider>
+          <BrowserRouter>
+            <Suspense fallback={<div className="min-h-screen flex items-center justify-center bg-slate-50"><div className="w-8 h-8 border-2 border-sky-600 border-t-transparent rounded-full animate-spin"></div></div>}>
+              <Routes>
             <Route path="/" element={<LandingPage />} />
             <Route path="/login" element={<Login />} />
 
@@ -242,9 +251,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             <Route path="/audit-log" element={<RoleRedirect path="/audit-log" />} />
 
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
-          </Routes>
-        </BrowserRouter>
-      </SipanduDataProvider>
-    </AuthProvider>
+              </Routes>
+            </Suspense>
+          </BrowserRouter>
+        </SipanduDataProvider>
+      </AuthProvider>
+    </ErrorBoundary>
   </React.StrictMode>
 );
