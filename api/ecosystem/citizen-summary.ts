@@ -1,7 +1,3 @@
-export const config = {
-  runtime: 'edge',
-};
-
 import { createClient } from "@insforge/sdk";
 
 const corsHeaders = {
@@ -9,13 +5,6 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Ecosystem-Key",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
 };
-
-function respond(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
-}
 
 function mapKategori(kategori?: string): string {
   switch (kategori) {
@@ -29,33 +18,37 @@ function mapKategori(kategori?: string): string {
   }
 }
 
-export default async function handler(req: Request) {
+export default async function handler(req: any, res: any) {
+  // Set CORS headers
+  for (const [key, value] of Object.entries(corsHeaders)) {
+    res.setHeader(key, value);
+  }
+
   if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders });
+    return res.status(204).end();
   }
 
   if (req.method !== "GET") {
-    return respond({ success: false, message: "Method not allowed" }, 405);
+    return res.status(405).json({ success: false, message: "Method not allowed" });
   }
 
   // Auth: Check X-Ecosystem-Key
-  const ecosystemKey = req.headers.get("X-Ecosystem-Key");
+  const ecosystemKey = req.headers["x-ecosystem-key"];
   const expectedKey = process.env.ECOSYSTEM_SERVICE_KEY;
 
   if (!expectedKey) {
     console.error("Missing ECOSYSTEM_SERVICE_KEY in environment variables");
-    return respond({ success: false, message: "Server configuration error" }, 500);
+    return res.status(500).json({ success: false, message: "Server configuration error" });
   }
 
   if (ecosystemKey !== expectedKey) {
-    return respond({ success: false, message: "Unauthorized" }, 401);
+    return res.status(401).json({ success: false, message: "Unauthorized" });
   }
 
-  const url = new URL(req.url);
-  const nik = url.searchParams.get("nik");
+  const nik = req.query.nik;
 
-  if (!nik || !/^\d{16}$/.test(nik)) {
-    return respond({ success: false, message: "Invalid NIK parameter" }, 400);
+  if (!nik || typeof nik !== 'string' || !/^\d{16}$/.test(nik)) {
+    return res.status(400).json({ success: false, message: "Invalid NIK parameter" });
   }
 
   // Initialize Supabase Client (Using Service Role Key if available, else Anon Key)
@@ -82,7 +75,7 @@ export default async function handler(req: Request) {
       .eq("nik", nik);
 
     if (anggotaErr || !anggotaList || anggotaList.length === 0) {
-      return respond({ success: true, data: null }, 200);
+      return res.status(200).json({ success: true, data: null });
     }
 
     const a = anggotaList[0];
@@ -198,9 +191,9 @@ export default async function handler(req: Request) {
       record.usia_tahun = Math.floor(totalMonths / 12);
     }
 
-    return respond({ success: true, data: record }, 200);
+    return res.status(200).json({ success: true, data: record });
   } catch (e) {
     console.error("API error:", e);
-    return respond({ success: false, message: "Internal server error" }, 500);
+    return res.status(500).json({ success: false, message: "Internal server error" });
   }
 }
