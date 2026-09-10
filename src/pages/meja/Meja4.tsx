@@ -32,7 +32,8 @@ const IMUNISASI_OPTIONS = [
 function AntreanMeja4({ data, navigate }: { data: any; navigate: any }) {
   const { currentRole } = useAuth();
   const rolePrefix = getRolePrefix(currentRole);
-  const list = data.kunjunganAktif;
+  const rawList = data.kunjunganAktif;
+  const list = rawList.filter((k: any) => k.catatan && Object.keys(k.catatan).length > 0);
   const sudahDilayani = list.filter((k: any) => {
     const p = k.pelayanan;
     return p && (p.vitamin_a || p.pmt || (p.imunisasi && p.imunisasi.length > 0) || p.tablet_fe || p.rujukan);
@@ -67,10 +68,10 @@ function AntreanMeja4({ data, navigate }: { data: any; navigate: any }) {
         {list.length === 0 ? (
           <div className="p-12 text-center">
             <Syringe className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-            <p className="text-sm font-bold text-gray-700">Belum Ada Peserta Hadir Hari Ini</p>
-            <p className="text-xs text-gray-400 mt-1">Lakukan pendaftaran kehadiran peserta di Meja 1 terlebih dahulu.</p>
-            <Link to={`${rolePrefix}/meja1`} className="mt-4 inline-block px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-semibold">
-              Buka Meja 1 Registrasi
+            <p className="text-sm font-bold text-gray-700">Belum Ada Peserta Siap di Meja 4</p>
+            <p className="text-xs text-gray-400 mt-1">Selesaikan pencatatan peserta di Meja 3 terlebih dahulu agar muncul di sini.</p>
+            <Link to={`${rolePrefix}/meja3`} className="mt-4 inline-block px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-semibold">
+              Buka Meja 3 Pencatatan
             </Link>
           </div>
         ) : (

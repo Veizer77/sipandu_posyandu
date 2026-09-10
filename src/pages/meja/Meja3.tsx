@@ -15,7 +15,8 @@ import { maskNik } from "@/lib/utils";
 function AntreanMeja3({ data, navigate }: { data: any; navigate: any }) {
   const { currentRole } = useAuth();
   const rolePrefix = getRolePrefix(currentRole);
-  const list = data.kunjunganAktif;
+  const rawList = data.kunjunganAktif;
+  const list = rawList.filter((k: any) => k.pengukuran && Object.keys(k.pengukuran).length > 0);
   const sudahCatat = list.filter((k: any) => k.catatan && (k.catatan.keluhan || k.catatan.catatan_kader)).length;
   const siapCatat = list.filter((k: any) => k.pengukuran && (k.pengukuran.berat_badan || k.pengukuran.tinggi_badan)).length;
 
@@ -47,10 +48,10 @@ function AntreanMeja3({ data, navigate }: { data: any; navigate: any }) {
         {list.length === 0 ? (
           <div className="p-12 text-center">
             <NotebookPen className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-            <p className="text-sm font-bold text-gray-700">Belum Ada Peserta Hadir Hari Ini</p>
-            <p className="text-xs text-gray-400 mt-1">Lakukan pendaftaran kehadiran peserta di Meja 1 terlebih dahulu.</p>
-            <Link to={`${rolePrefix}/meja1`} className="mt-4 inline-block px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-semibold">
-              Buka Meja 1 Registrasi
+            <p className="text-sm font-bold text-gray-700">Belum Ada Peserta Siap di Meja 3</p>
+            <p className="text-xs text-gray-400 mt-1">Selesaikan pengukuran peserta di Meja 2 terlebih dahulu agar muncul di sini.</p>
+            <Link to={`${rolePrefix}/meja2`} className="mt-4 inline-block px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-semibold">
+              Buka Meja 2 Pengukuran
             </Link>
           </div>
         ) : (
