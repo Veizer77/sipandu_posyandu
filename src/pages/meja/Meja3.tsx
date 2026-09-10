@@ -88,7 +88,16 @@ function AntreanMeja3({ data, navigate }: { data: any; navigate: any }) {
                       </div>
                       <p className="text-xs text-gray-500 mt-1">
                         NIK: {maskNik(a.nik)}
-                        {hasMeasure ? ` · Hasil Meja 2: BB ${p.berat_badan || "—"} kg, TB ${p.tinggi_badan || "—"} cm (${p.status_gizi || "Normal"})` : " · Belum melakukan pengukuran antropometri di Meja 2"}
+                        {hasMeasure ? (
+                          <>
+                            {" · Hasil Meja 2: "}
+                            {p.berat_badan && `BB ${p.berat_badan} kg `}
+                            {p.tinggi_badan && `· TB ${p.tinggi_badan} cm `}
+                            {p.lingkar_lengan_atas && `· LILA ${p.lingkar_lengan_atas} cm `}
+                            {p.td_sistolik && `· Tensi ${p.td_sistolik}/${p.td_diastolik} `}
+                            <span className="font-semibold text-emerald-600">({p.status_gizi || p.status_kehamilan || p.status_risiko || "Selesai"})</span>
+                          </>
+                        ) : " · Belum melakukan pengukuran antropometri di Meja 2"}
                       </p>
                       {hasNotes && c.keluhan && (
                         <p className="text-xs text-slate-600 mt-0.5 italic">Keluhan: "{c.keluhan}"</p>
@@ -212,13 +221,30 @@ export default function Meja3() {
             <span className="text-gray-400">Berat Badan:</span>
             <p className="font-bold text-gray-800">{p.berat_badan || "—"} kg</p>
           </div>
-          <div>
-            <span className="text-gray-400">Tinggi Badan:</span>
-            <p className="font-bold text-gray-800">{p.tinggi_badan || p.panjang_badan || "—"} cm</p>
-          </div>
+          {p.tinggi_badan || p.panjang_badan ? (
+            <div>
+              <span className="text-gray-400">Tinggi Badan:</span>
+              <p className="font-bold text-gray-800">{p.tinggi_badan || p.panjang_badan} cm</p>
+            </div>
+          ) : p.lingkar_lengan_atas ? (
+            <div>
+              <span className="text-gray-400">LILA:</span>
+              <p className="font-bold text-gray-800">{p.lingkar_lengan_atas} cm</p>
+            </div>
+          ) : p.td_sistolik ? (
+            <div>
+              <span className="text-gray-400">Tensi:</span>
+              <p className="font-bold text-gray-800">{p.td_sistolik}/{p.td_diastolik}</p>
+            </div>
+          ) : (
+            <div>
+              <span className="text-gray-400">Pengukuran:</span>
+              <p className="font-bold text-gray-800">Selesai</p>
+            </div>
+          )}
           <div>
             <span className="text-gray-400">Status Gizi:</span>
-            <p className="font-bold text-green-700">{p.status_gizi || "—"}</p>
+            <p className="font-bold text-green-700">{p.status_gizi || p.status_kehamilan || "—"}</p>
           </div>
         </div>
 

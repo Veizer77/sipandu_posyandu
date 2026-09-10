@@ -119,8 +119,16 @@ function AntreanMeja2({ data, navigate }: { data: any; navigate: any }) {
                       <p className="text-xs text-gray-500">
                         NIK: {maskNik(a.nik)} · Usia:{" "}
                         {WHO_ENGINE.hitungUsia(a.tanggal_lahir)?.usiaTeks || "—"}
-                        {isDone &&
-                          ` · BB: ${p.berat_badan || "—"} kg · TB: ${p.tinggi_badan || "—"} cm · Status: ${p.status_gizi || "Normal"}`}
+                        {isDone && (
+                          <>
+                            {" · "}
+                            {p.berat_badan && `BB: ${p.berat_badan} kg `}
+                            {p.tinggi_badan && `· TB: ${p.tinggi_badan} cm `}
+                            {p.lingkar_lengan_atas && `· LILA: ${p.lingkar_lengan_atas} cm `}
+                            {p.td_sistolik && `· TD: ${p.td_sistolik}/${p.td_diastolik} `}
+                            {p.status_gizi && `· Status: ${p.status_gizi}`}
+                          </>
+                        )}
                       </p>
                     </div>
                   </div>
@@ -1301,9 +1309,9 @@ export default function Meja2() {
                           })}
                         </p>
                         <p className="text-[11px] text-gray-500 mt-0.5">
-                          BB: {p.berat_badan ? `${p.berat_badan} kg` : "—"} · TB:{" "}
-                          {p.tinggi_badan ? `${p.tinggi_badan} cm` : "—"}
-                          {p.lingkar_lengan ? ` · LILA: ${p.lingkar_lengan} cm` : ""}
+                          {p.berat_badan ? `BB: ${p.berat_badan} kg` : ""}
+                          {p.tinggi_badan ? ` · TB: ${p.tinggi_badan} cm` : ""}
+                          {p.lingkar_lengan_atas ? ` · LILA: ${p.lingkar_lengan_atas} cm` : ""}
                           {p.td_sistolik ? ` · TD: ${p.td_sistolik}/${p.td_diastolik}` : ""}
                         </p>
                       </div>
