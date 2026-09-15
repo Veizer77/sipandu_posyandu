@@ -218,7 +218,7 @@ export function RoleMatrix() {
                   <div className="flex items-center justify-between border-b border-white/10 pb-4">
                     <div>
                       <p className="text-xs font-bold text-white">{current.mockup.title}</p>
-                      <p className="text-[10px] text-slate-400">{current.mockup.status}</p>
+                      <p className="text-[10px] text-slate-400">{current.mockup.status} · Pratinjau ilustratif</p>
                     </div>
                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
                   </div>

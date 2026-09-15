@@ -266,25 +266,26 @@ export function Pengaturan() {
 }
 
 const AVATAR_PRESETS: { role: string; label: string; url: string }[] = [
-  // Super Admin
-  { role: "super_admin", label: "Admin Izzat (Formal)", url: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=256&auto=format&fit=crop&q=80" },
-  { role: "super_admin", label: "Admin Eksekutif", url: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=256&auto=format&fit=crop&q=80" },
+  // Catatan audit: label memakai deskripsi netral (bukan nama petugas resmi),
+  // karena foto ini adalah stok Unsplash dan BUKAN wajah petugas sebenarnya.
+  { role: "super_admin", label: "Ilustrasi Admin (Formal)", url: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=256&auto=format&fit=crop&q=80" },
+  { role: "super_admin", label: "Ilustrasi Admin (Eksekutif)", url: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=256&auto=format&fit=crop&q=80" },
 
   // Kader
-  { role: "kader", label: "Kader Bu Sari (Hijab)", url: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=256&auto=format&fit=crop&q=80" },
-  { role: "kader", label: "Kader Ramah (Batik)", url: "https://images.unsplash.com/photo-1580489944761-15a19d654956?w=256&auto=format&fit=crop&q=80" },
+  { role: "kader", label: "Ilustrasi Kader (Hijab)", url: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=256&auto=format&fit=crop&q=80" },
+  { role: "kader", label: "Ilustrasi Kader (Batik)", url: "https://images.unsplash.com/photo-1580489944761-15a19d654956?w=256&auto=format&fit=crop&q=80" },
 
   // Bidan
-  { role: "bidan", label: "Bidan Siti Aminah", url: "https://images.unsplash.com/photo-1594824813681-3701540e163b?w=256&auto=format&fit=crop&q=80" },
-  { role: "bidan", label: "Bidan Medis Klinis", url: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=256&auto=format&fit=crop&q=80" },
+  { role: "bidan", label: "Ilustrasi Bidan (Hijab)", url: "https://images.unsplash.com/photo-1594824813681-3701540e163b?w=256&auto=format&fit=crop&q=80" },
+  { role: "bidan", label: "Ilustrasi Bidan (Klinis)", url: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=256&auto=format&fit=crop&q=80" },
 
   // Ketua PKK
-  { role: "ketua_pkk", label: "Ibu Hartini Sutrisno", url: "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=256&auto=format&fit=crop&q=80" },
-  { role: "ketua_pkk", label: "Tokoh Penggerak PKK", url: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=256&auto=format&fit=crop&q=80" },
+  { role: "ketua_pkk", label: "Ilustrasi Ketua PKK (Formal)", url: "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=256&auto=format&fit=crop&q=80" },
+  { role: "ketua_pkk", label: "Ilustrasi Penggerak PKK", url: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=256&auto=format&fit=crop&q=80" },
 
   // Kepala Desa
-  { role: "kepala_desa", label: "Bpk. Bambang Sutrisno", url: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=256&auto=format&fit=crop&q=80" },
-  { role: "kepala_desa", label: "Pamong Pemerintahan", url: "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=256&auto=format&fit=crop&q=80" },
+  { role: "kepala_desa", label: "Ilustrasi Kepala Desa (Formal)", url: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=256&auto=format&fit=crop&q=80" },
+  { role: "kepala_desa", label: "Ilustrasi Pamong Pemerintahan", url: "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=256&auto=format&fit=crop&q=80" },
 ];
 
 interface OfficialRoleMeta {

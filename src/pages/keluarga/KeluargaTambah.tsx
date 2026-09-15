@@ -147,7 +147,6 @@ export function KeluargaTambah() {
           type="button"
           onClick={() => {
             setModalOpen(true);
-            setSearchNik("3579012403100003");
           }}
           className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-sm whitespace-nowrap flex items-center justify-center gap-1.5"
         >
@@ -276,7 +275,7 @@ export function KeluargaTambah() {
                   <span>{searching ? "Mencari..." : "Cari LIVE"}</span>
                 </button>
               </div>
-              <p className="text-[11px] text-slate-400 mt-1">Contoh NIK uji coba: <code className="bg-slate-100 px-1 py-0.5 rounded cursor-pointer" onClick={() => setSearchNik("3579012403100003")}>3579012403100003</code></p>
+              <p className="text-[11px] text-slate-400 mt-1">Masukkan NIK 16 digit warga RW 06 untuk menarik data dari master SINDUKSADATI.</p>
             </div>
 
             {searchError && (

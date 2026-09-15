@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useSipandu } from "@/lib/data-store";
-import { useRTDistribution } from "@/lib/dashboard-helpers";
+import { useRTDistribution, formatWilayahPosyandu } from "@/lib/dashboard-helpers";
 import { buildTrenPersen6Bulan } from "@/lib/tren6bulan";
 
 export default function KadesDashboardPage() {
@@ -49,6 +49,7 @@ export default function KadesDashboardPage() {
 
   const stuntingRate = balitaCount > 0 ? ((stuntingCount / balitaCount) * 100).toFixed(1) : "0.0";
   const rtData = useRTDistribution(data.keluarga, data.anggota, allVisits);
+  const wilayah = formatWilayahPosyandu(data.posyandu);
 
   // Tren penurunan stunting 6 bulan: bulan berjalan = data riil, sisanya ilustrasi
   const stuntingTrend = buildTrenPersen6Bulan(Number(stuntingRate) || 0);
@@ -294,7 +295,7 @@ export default function KadesDashboardPage() {
         <div className="flex items-center justify-between mb-4 border-b border-gray-100 pb-3">
           <div>
             <h3 className="font-bold text-gray-900 text-sm">Distribusi Kependudukan & Cakupan Layanan per RT</h3>
-            <p className="text-xs text-gray-500">Sebaran 4 RT di RW 06 Dusun Krajan Desa Mojorejo</p>
+            <p className="text-xs text-gray-500">Sebaran {rtData.length} RT di RW 06 {wilayah.ringkas}</p>
           </div>
           <span className="text-xs font-bold text-gray-600 bg-gray-100 px-2.5 py-1 rounded-full">
             Total {totalKK} KK
@@ -307,7 +308,7 @@ export default function KadesDashboardPage() {
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-emerald-800">RT {item.rt}</span>
                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
-                  {item.pct}% Hadir
+                  {item.belumAdaData ? "Belum ada data" : `${item.pct}% Hadir`}
                 </span>
               </div>
               <div className="text-2xl font-extrabold text-slate-900 mt-1">{item.jiwa} <span className="text-xs font-normal text-slate-500">Jiwa</span></div>

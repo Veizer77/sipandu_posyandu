@@ -23,7 +23,7 @@ export default function IntegrasiSinduksadati() {
   // Manual linking modal state
   const [modalOpen, setModalOpen] = useState(false);
   const [selectedAnggotaId, setSelectedAnggotaId] = useState("");
-  const [inputNik, setInputNik] = useState("3579012403100003");
+  const [inputNik, setInputNik] = useState("");
   const [searching, setSearching] = useState(false);
   const [searchResult, setSearchResult] = useState<any>(null);
   const [searchError, setSearchError] = useState("");
@@ -201,7 +201,7 @@ export default function IntegrasiSinduksadati() {
             <thead className="bg-gray-50 text-gray-500 text-[10px] uppercase font-semibold border-b border-gray-100">
               <tr>
                 <th className="px-4 py-3">Resident Code</th>
-                <th className="px-4 py-3">NIK</th>
+                <th className="px-4 py-3">NIK (masked)</th>
                 <th className="px-4 py-3">Nama</th>
                 <th className="px-4 py-3">RT/RW</th>
                 <th className="px-4 py-3">Status</th>
@@ -209,6 +209,17 @@ export default function IntegrasiSinduksadati() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
+              {master.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                    <p className="text-xs font-semibold text-gray-700">Belum ada data master SINDUKSADATI yang tersinkron.</p>
+                    <p className="text-[11px] text-gray-500 mt-0.5">
+                      Daftar ini terisi otomatis setelah integrasi Fase 4 aktif (webhook &amp; lookup live). Untuk saat ini,
+                      gunakan tombol <strong>Tool Linking Manual &amp; Live Lookup</strong> di atas untuk menghubungkan warga secara langsung.
+                    </p>
+                  </td>
+                </tr>
+              )}
               {master.map((m: any) => (
                 <tr key={m.penduduk_id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-mono text-gray-700">{m.resident_code}</td>
@@ -240,6 +251,14 @@ export default function IntegrasiSinduksadati() {
           <h3 className="font-bold text-gray-900 flex items-center gap-2"><ArrowDownUp className="w-4 h-4 text-emerald-600" /> Webhook Event Log</h3>
         </div>
         <div className="divide-y divide-gray-100">
+          {events.length === 0 && (
+            <div className="p-8 text-center">
+              <p className="text-xs font-semibold text-gray-700">Belum ada event webhook yang diterima.</p>
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                Event lifecycle kependudukan (PERSON_CREATED/UPDATED/MOVED/DECEASED) akan tercatat di sini setelah integrasi Fase 4 aktif.
+              </p>
+            </div>
+          )}
           {events.map((e: any) => (
             <div key={e.id} className="p-4 flex items-start justify-between gap-4 text-xs">
               <div>

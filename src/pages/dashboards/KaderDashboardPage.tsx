@@ -49,17 +49,24 @@ export default function KaderDashboardPage() {
       desc: string;
     }> = [];
 
-    // 1. Balita
+    // AUDIT: sebelumnya SEMUA balita/bumil dimasukkan (termasuk yang normal) ke
+    // panel "Perhatian Khusus Berisiko". Kini hanya yang BENAR berisiko:
+    // - Balita: z_bbu < -2 (gizi kurang/buruk) ATAU z_tbu < -2 (stunting)
+    // - Bumil: TD >= 140/90 (hipertensi) ATAU LILA < 23,5 (KEK)
+    // - Lansia: TD >= 140/90 ATAU GDS >= 140
+
+    // 1. Balita berisiko
     const balitaList = data.anggota.filter((a: any) => a.kategori === "balita" || a.kategori === "bayi");
     balitaList.forEach((b: any) => {
       const v = allVisits.find((k: any) => k.anggota_id === b.id);
       const p = v?.pengukuran;
+      if (!p) return;
       let ageMonths = 0;
       if (b.tanggal_lahir) {
         ageMonths = Math.max(0, Math.floor((new Date().getTime() - new Date(b.tanggal_lahir).getTime()) / (1000 * 60 * 60 * 24 * 30.4375)));
       }
 
-      if (p?.z_score_bbu != null && p.z_score_bbu < -2) {
+      if (p.z_score_bbu != null && p.z_score_bbu < -2) {
         list.push({
           id: b.id,
           nama: `${b.nama} (${ageMonths} bln)`,
@@ -69,7 +76,7 @@ export default function KaderDashboardPage() {
           color: "red",
           desc: "Berat badan di bawah garis standar. Perlu rujukan dan intervensi PMT Pemulihan.",
         });
-      } else if (p?.z_score_tbu != null && p.z_score_tbu < -2) {
+      } else if (p.z_score_tbu != null && p.z_score_tbu < -2) {
         list.push({
           id: b.id,
           nama: `${b.nama} (${ageMonths} bln)`,
@@ -79,47 +86,56 @@ export default function KaderDashboardPage() {
           color: "amber",
           desc: "Tinggi/panjang badan di bawah -2 SD. Prioritas intervensi protein hewani & sanitasi.",
         });
-      } else {
-        list.push({
-          id: b.id,
-          nama: `${b.nama} (${ageMonths} bln)`,
-          kategori: "balita",
-          sub: "Balita Terdata RW 06 · Pantau KMS Digital",
-          tag: "PEMANTAUAN BALITA",
-          color: "amber",
-          desc: "Balita dalam sasaran prioritas pemantauan tumbuh kembang dan imunisasi rutin.",
-        });
       }
     });
 
-    // 2. Bumil
+    // 2. Bumil berisiko (hipertensi / KEK)
     const bumilList = data.anggota.filter((a: any) => a.kategori === "ibu_hamil" || a.kategori === "bumil");
     bumilList.forEach((bm: any) => {
       const v = allVisits.find((k: any) => k.anggota_id === bm.id);
       const p = v?.pengukuran;
-      list.push({
-        id: bm.id,
-        nama: bm.nama,
-        kategori: "ibu_hamil",
-        sub: p?.tekanan_darah_sistol ? `TD: ${p.tekanan_darah_sistol}/${p.tekanan_darah_diastol} mmHg` : "Ibu Hamil Terdata RW 06",
-        tag: "BUMIL PRIORITAS",
-        color: "rose",
-        desc: "Sasaran prioritas antenatal care. Pantau tekanan darah, kenaikan BB, dan LILA (pencegahan KEK).",
-      });
+      const sistolik = Number(p?.tekanan_darah_sistol ?? p?.td_sistolik ?? 0);
+      const diastolik = Number(p?.tekanan_darah_diastol ?? p?.td_diastolik ?? 0);
+      const lila = Number(p?.lingkar_lengan ?? p?.lingkar_lengan_atas ?? 0);
+      const hipertensi = sistolik >= 140 || diastolik >= 90;
+      const kek = lila > 0 && lila < 23.5;
+      if (hipertensi || kek) {
+        list.push({
+          id: bm.id,
+          nama: bm.nama,
+          kategori: "ibu_hamil",
+          sub: hipertensi
+            ? `TD: ${sistolik}/${diastolik} mmHg`
+            : `LILA: ${lila} cm (< 23,5 cm)`,
+          tag: hipertensi ? "HIPERTENSI KEHAMILAN" : "KEK (KURANG ENERGI KRONIK)",
+          color: "rose",
+          desc: "Sasaran prioritas antenatal care. Rujuk/pantau sesuai temuan risiko.",
+        });
+      }
     });
 
-    // 3. Lansia
+    // 3. Lansia berisiko (hipertensi / hiperglikemia)
     const lansiaList = data.anggota.filter((a: any) => a.kategori === "lansia");
-    lansiaList.slice(0, 2).forEach((ls: any) => {
-      list.push({
-        id: ls.id,
-        nama: ls.nama,
-        kategori: "lansia",
-        sub: "Skrining Penyakit Tidak Menular (PTM)",
-        tag: "SKRINING LANSIA",
-        color: "blue",
-        desc: "Pemeriksaan rutin tekanan darah, kadar gula darah, dan kolesterol di Meja 4.",
-      });
+    lansiaList.forEach((ls: any) => {
+      const v = allVisits.find((k: any) => k.anggota_id === ls.id);
+      const p = v?.pengukuran;
+      if (!p) return;
+      const sistolik = Number(p?.tekanan_darah_sistol ?? p?.td_sistolik ?? 0);
+      const diastolik = Number(p?.tekanan_darah_diastol ?? p?.td_diastolik ?? 0);
+      const gds = Number(p?.gula_darah ?? p?.gula_darah_sewaktu ?? 0);
+      const hipertensi = sistolik >= 140 || diastolik >= 90;
+      const hiperglikemia = gds >= 140;
+      if (hipertensi || hiperglikemia) {
+        list.push({
+          id: ls.id,
+          nama: ls.nama,
+          kategori: "lansia",
+          sub: hipertensi ? `TD: ${sistolik}/${diastolik} mmHg` : `GDS: ${gds} mg/dL`,
+          tag: hipertensi ? "HIPERTENSI PTM" : "HIPERGLIKEMIA",
+          color: "blue",
+          desc: "Skrining Penyakit Tidak Menular (PTM). Pantau tekanan darah & gula darah.",
+        });
+      }
     });
 
     return list;
@@ -209,6 +225,14 @@ export default function KaderDashboardPage() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {riskTargets.length === 0 && (
+            <div className="md:col-span-3 p-6 text-center bg-emerald-50 rounded-xl border border-emerald-100">
+              <p className="text-xs font-bold text-emerald-900">Tidak Ada Sasaran Berisiko Terdeteksi</p>
+              <p className="text-[11px] text-emerald-700 mt-0.5">
+                Belum ada balita/bumil/lansia dengan temuan risiko dari pengukuran terakhir.
+              </p>
+            </div>
+          )}
           {riskTargets.map((item) => {
             const colorClass =
               item.color === "red"

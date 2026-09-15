@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useSipandu } from "@/lib/data-store";
-import { useRTDistribution } from "@/lib/dashboard-helpers";
+import { useRTDistribution, formatWilayahPosyandu } from "@/lib/dashboard-helpers";
 import { buildTrenPersen6Bulan } from "@/lib/tren6bulan";
 
 export default function PKKDashboardPage() {
@@ -61,13 +61,19 @@ export default function PKKDashboardPage() {
   );
 
   const rtData = useRTDistribution(data.keluarga, data.anggota, allVisits);
+  const wilayah = formatWilayahPosyandu(data.posyandu);
 
   // Tren D/S 6 bulan: bulan berjalan = data riil (persenDS), sisanya ilustrasi
   const trendData = buildTrenPersen6Bulan(Number(persenDS) || 0);
-  const rtTertinggi = rtData.reduce(
-    (best: any, r: any) => (!best || r.pct > best.pct ? r : best),
-    null as any
-  );
+  const rtTertinggi = rtData
+    .filter((r: any) => !r.belumAdaData)
+    .reduce((best: any, r: any) => (!best || r.pct > best.pct ? r : best), null as any);
+
+  // RT dengan cakupan kehadiran terendah yang SUDAH punya data (untuk rekomendasi
+  // kunjungan rumah berbasis data riil, bukan RT hardcoded).
+  const rtAbsenTerbanyak = rtData
+    .filter((r: any) => !r.belumAdaData)
+    .reduce((worst: any, r: any) => (!worst || r.pct < worst.pct ? r : worst), null as any);
 
   return (
     <div className="p-4 sm:p-8 space-y-6">
@@ -86,7 +92,7 @@ export default function PKKDashboardPage() {
               Selamat Datang, {currentUser?.nama_lengkap}
             </h1>
             <p className="text-purple-100 text-xs sm:text-sm max-w-2xl leading-relaxed">
-              Monitoring Kinerja Posyandu ILP, Partisipasi Kehadiran Warga (D/S), Distribusi PMT Pemulihan Bahan Pangan Lokal, dan Intervensi Pencegahan Stunting di Dusun Krajan.
+              Monitoring Kinerja Posyandu ILP, Partisipasi Kehadiran Warga (D/S), Distribusi PMT Pemulihan Bahan Pangan Lokal, dan Intervensi Pencegahan Stunting di {wilayah.ringkas}.
             </p>
           </div>
 
@@ -238,8 +244,7 @@ export default function PKKDashboardPage() {
           </div>
         </div>
 
-        {/* Distribusi Penduduk & Kehadiran per RT */}
-        <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-sm flex flex-col justify-between">
+        {/* Distribusi Penduduk & Kehadiran per RT */}        <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-sm flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between border-b border-gray-100 pb-3 mb-4">
               <div className="flex items-center gap-2">
@@ -248,7 +253,7 @@ export default function PKKDashboardPage() {
                 </span>
                 <div>
                   <h3 className="font-bold text-sm text-gray-900">Distribusi Sasaran & Cakupan per RT</h3>
-                  <p className="text-xs text-gray-500">Wilayah RT 01 s/d RT 04 RW 06 Desa Mojorejo</p>
+                  <p className="text-xs text-gray-500">Wilayah RW 06 {wilayah.desa} (dari profil posyandu)</p>
                 </div>
               </div>
               <span className="text-xs font-bold text-sky-600 bg-sky-50 px-2 py-0.5 rounded-full">
@@ -265,7 +270,7 @@ export default function PKKDashboardPage() {
                       <span className="text-gray-500 ml-2 font-medium">({r.kk} KK · {r.jiwa} Jiwa)</span>
                     </div>
                     <span className="text-xs font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-md">
-                      {r.pct}% Hadir
+                      {r.belumAdaData ? "Belum ada data" : `${r.pct}% Hadir`}
                     </span>
                   </div>
                   <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
@@ -303,8 +308,8 @@ export default function PKKDashboardPage() {
             untuk percepatan penurunan stunting 1000 HPK.
           </p>
           <div className="p-3 bg-green-50 rounded-xl border border-green-200 space-y-1">
-            <p className="text-xs font-bold text-green-900">Menu Hari Ini: Bubur Singkong Hati Ayam</p>
-            <p className="text-[11px] text-green-700">Energi: 250 kkal · Protein: 9.5 gr · Fe: 2.8 mg</p>
+            <p className="text-xs font-bold text-green-900">Panduan Menu PMT (acuan gizi)</p>
+            <p className="text-[11px] text-green-700">Contoh standar: bubur berbahan pangan lokal ±250 kkal, protein ±9 gr, Fe ±2,8 mg per porsi.</p>
           </div>
         </div>
 
@@ -321,8 +326,8 @@ export default function PKKDashboardPage() {
             konseling ASI eksklusif 6 bulan.
           </p>
           <div className="p-3 bg-purple-50 rounded-xl border border-purple-200 space-y-1">
-            <p className="text-xs font-bold text-purple-900">Target Dasawisma: 100% Bebas BABS</p>
-            <p className="text-[11px] text-purple-700">RW 06 telah mendeklarasikan ODF (Open Defecation Free)</p>
+            <p className="text-xs font-bold text-purple-900">Fokus Dasawisma: sanitasi & jamban sehat</p>
+            <p className="text-[11px] text-purple-700">Pantau capaian melalui pendataan kader (data sanitasi belum terekam di SIPANDU).</p>
           </div>
         </div>
 
@@ -337,7 +342,11 @@ export default function PKKDashboardPage() {
           <ul className="space-y-2 text-xs text-gray-600">
             <li className="flex items-start gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-500 mt-1.5 shrink-0" />
-              <span>Tingkatkan kunjungan rumah bagi balita yang mangkir 2 bulan berturut-turut di RT 03.</span>
+              <span>
+                {rtAbsenTerbanyak
+                  ? `Tingkatkan kunjungan rumah bagi sasaran yang mangkir, prioritas ${rtAbsenTerbanyak.label}.`
+                  : "Tingkatkan kunjungan rumah bagi balita yang mangkir dan ibu hamil berisiko."}
+              </span>
             </li>
             <li className="flex items-start gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-500 mt-1.5 shrink-0" />

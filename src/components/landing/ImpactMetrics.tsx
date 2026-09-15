@@ -32,22 +32,22 @@ export function ImpactMetrics() {
     {
       quote:
         'Dulu setelah posyandu selesai, kami kader masih harus lembur berjam-jam nyalin data dari buku register tebal ke lembar rekapitulasi dinas. Sejak pakai SIPANDU, begitu meja 5 selesai, laporan PDF langsung jadi dan tinggal dikirim!',
-      author: 'Ibu Rahayu',
-      role: 'Ketua Kader Posyandu Flamboyan RW 06',
+      author: 'Skenario Kader',
+      role: 'Kader Posyandu (ilustrasi)',
       location: 'Desa Mojorejo, Kota Batu',
     },
     {
       quote:
         'Deteksi dini stunting jadi jauh lebih terarah. Kalau ada balita yang beratnya tidak naik 2 bulan berturut-turut (2T), sistem langsung menyalakan tanda peringatan sehingga saya bisa segera verifikasi dan jadwalkan PMT pemulihan.',
-      author: 'Bidan Anisa, S.Tr.Keb',
-      role: 'Bidan Desa',
+      author: 'Skenario Bidan',
+      role: 'Bidan Desa (ilustrasi)',
       location: 'Wilayah Kerja Puskesmas Junrejo',
     },
     {
       quote:
         'Sebagai Kepala Desa, saya bisa melihat statistik riil kehadiran warga dan status gizi anak-anak secara transparan setiap saat. Ini memudahkan kami menyusun APBDes berbasis data nyata untuk pencegahan stunting.',
-      author: 'Bpk. H. Bambang',
-      role: 'Kepala Desa',
+      author: 'Skenario Kepala Desa',
+      role: 'Kepala Desa (ilustrasi)',
       location: 'Pemerintah Desa Mojorejo',
     },
   ];
@@ -103,6 +103,16 @@ export function ImpactMetrics() {
         </div>
 
         {/* Testimonial Cards */}
+        <FadeIn>
+          <div className="text-center mb-8 sm:mb-10">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold uppercase tracking-[0.15em]">
+              Ilustrasi / Skenario Penggunaan
+            </span>
+            <p className="text-xs text-slate-500 mt-2">
+              Kutipan berikut adalah skenario ilustratif, bukan pernyataan tokoh resmi.
+            </p>
+          </div>
+        </FadeIn>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8">
           {testimonials.map((t, idx) => (
             <FadeIn key={idx} delay={200 + idx * 100}>

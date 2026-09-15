@@ -21,11 +21,13 @@ import { useSipandu } from "@/lib/data-store";
 import WHO_ENGINE, { hitungUsia } from "@/utils/zscoreCalculator";
 import { statusImunisasi } from "@/utils/jadwalImunisasi";
 import { buildTren6Bulan, semuaIlustrasi } from "@/lib/tren6bulan";
+import { formatWilayahPosyandu } from "@/lib/dashboard-helpers";
 import { normalizeImunisasiList } from "@/lib/meja2Logic";
 
 export default function BidanDashboardPage() {
   const { currentUser, showToast } = useAuth();
   const { data, updateStatusRisiko } = useSipandu();
+  const wilayah = formatWilayahPosyandu(data.posyandu);
 
   const allVisits = useMemo(() => [...data.kunjunganAktif, ...data.kunjungan], [data.kunjunganAktif, data.kunjungan]);
   const draftCount = data.kunjunganAktif.filter((k: any) => k.status_verifikasi === "draft").length;
@@ -184,7 +186,7 @@ export default function BidanDashboardPage() {
               Selamat Bertugas, {currentUser?.nama_lengkap}
             </h1>
             <p className="text-blue-100 text-xs sm:text-sm max-w-2xl leading-relaxed">
-              Posyandu ILP Flamboyan RW 06 Dusun Krajan · Wilayah Kerja Puskesmas Mojorejo Kota Batu. Validasi tumbuh kembang KMS, deteksi dini risiko gizi & stunting, serta rujukan faskes tingkat lanjut.
+              {wilayah.nama} · {wilayah.ringkas} · Wilayah Kerja Puskesmas Junrejo. Validasi tumbuh kembang KMS, deteksi dini risiko gizi & stunting, serta rujukan faskes tingkat lanjut.
             </p>
           </div>
 

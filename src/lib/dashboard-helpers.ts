@@ -8,7 +8,32 @@ export function formatJadwal(jadwal: any) {
     month: "long",
     year: "numeric",
   });
-  return `${dateStr} · ${jadwal.tema || "Posyandu Rutin"}`;
+  return `${dateStr} A� ${jadwal.tema || "Posyandu Rutin"}`;
+}
+
+/**
+ * Deskripsi wilayah posyandu dari data DB (toleran dua bentuk: row DB
+ * `nama/desa/kecamatan/kota` maupun default state `nama_posyandu/desa_kelurahan`).
+ * Menggantikan hardcode "Dusun Krajan" agar konsisten dengan profil posyandu.
+ */
+export function formatWilayahPosyandu(posyandu: any): {
+  nama: string;
+  desa: string;
+  kecamatan: string;
+  kota: string;
+  ringkas: string;
+} {
+  const nama = posyandu?.nama || posyandu?.nama_posyandu || "Posyandu ILP Flamboyan RW 06";
+  const desa = posyandu?.desa || posyandu?.desa_kelurahan || "Mojorejo";
+  const kecamatan = posyandu?.kecamatan || "Junrejo";
+  const kota = posyandu?.kota || posyandu?.kabupaten_kota || "Kota Batu";
+  return {
+    nama,
+    desa,
+    kecamatan,
+    kota,
+    ringkas: `Desa ${desa}, Kec. ${kecamatan}, ${kota}`,
+  };
 }
 
 export function useRTDistribution(keluargaList: any[], anggotaList: any[], kunjunganList: any[]) {
@@ -31,13 +56,18 @@ export function useRTDistribution(keluargaList: any[], anggotaList: any[], kunju
     const entries = Object.entries(map).sort(([a], [b]) => a.localeCompare(b));
     return entries.map(([rt, stat]) => {
       const pct = stat.jiwa > 0 ? Math.round((stat.hadir / stat.jiwa) * 100) : 0;
+      // CATATAN AUDIT: sebelumnya ada fallback pct fiktif (72 + rt%12*1.8) saat
+      // hadir=0, sehingga dashboard PKK/Kades menampilkan cakupan karangan.
+      // Kini pct = nilai riil (0 bila belum ada kehadiran) + flag belumAdaData
+      // agar UI dapat menampilkan "—" alih-alih angka menyesatkan.
       return {
         rt,
         label: `RT ${rt} (RW 06)`,
         kk: stat.kk,
         jiwa: stat.jiwa,
         hadir: stat.hadir,
-        pct: stat.hadir > 0 ? pct : Math.min(95, Math.round(72 + (parseInt(rt, 10) % 12) * 1.8)),
+        pct,
+        belumAdaData: stat.hadir === 0,
       };
     });
   }, [keluargaList, anggotaList, kunjunganList]);

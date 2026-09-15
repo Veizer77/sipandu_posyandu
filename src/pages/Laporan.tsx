@@ -275,7 +275,7 @@ export default function Laporan() {
 
   const bidan = data.organisasi?.find((o: any) => o.jabatan === "bidan") || {
     nama: SIPANDU_SEED.persona.bidan,
-    nip_sip: "19850412 201001 2 021",
+    nip_sip: null,
   };
   const ketua = data.organisasi?.find((o: any) => o.jabatan === "ketua_pkk") || {
     nama: SIPANDU_SEED.persona.ketua_pkk,
