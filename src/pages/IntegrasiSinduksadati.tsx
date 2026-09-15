@@ -300,6 +300,24 @@ export default function IntegrasiSinduksadati() {
           </div>
         </div>
 
+        {/* Catatan interpretasi indikator per kategori (standar WHO) */}
+        {(() => {
+          const kat = chosenMember?.kategori;
+          const isAnak = kat === "bayi" || kat === "balita";
+          const isBumil = kat === "ibu_hamil";
+          const note = isAnak
+            ? "Balita: status gizi & stunting memakai Z-score WHO 2006 (BB/U, TB/U, BB/TB) untuk usia 0–60 bulan."
+            : isBumil
+            ? "Ibu Hamil: indikator memakai LILA (deteksi KEK <23,5 cm) dan tekanan darah — Z-score/IMT tidak berlaku."
+            : "Dewasa (WUS/Lansia/Umum): status gizi memakai IMT/BMI (underweight <18,5 · normal 18,5–24,9 · overweight ≥25 · obesitas ≥30). Z-score WHO hanya untuk balita.";
+          return (
+            <div className={`p-3 rounded-xl border text-[11px] leading-relaxed flex items-start gap-2 ${isAnak ? "bg-sky-50 border-sky-200 text-sky-900" : "bg-amber-50 border-amber-200 text-amber-900"}`}>
+              <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <span>{note}</span>
+            </div>
+          );
+        })()}
+
         <pre className="bg-slate-900 text-emerald-300 p-5 rounded-2xl text-[11px] leading-relaxed overflow-x-auto font-mono shadow-inner">
           {citizen360Json}
         </pre>

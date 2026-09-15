@@ -564,6 +564,26 @@ export default function Meja2() {
         status: "aktif",
       }));
 
+      // Klasifikasi gizi: Z-score WHO hanya untuk anak (bayi/balita).
+      // Dewasa (wus/lansia/umum) memakai IMT/BMI. Bumil memakai LILA/TD.
+      // JANGAN fallback "Normal" untuk kategori yang tidak dihitung (data menyesatkan).
+      let statusGizi: string | null = null;
+      if (isAnak) {
+        statusGizi = analysis?.status_bbu?.label ?? null;
+      } else if (isWus || isLansia || kategori === "umum") {
+        const bbNum = form.berat_badan ? parseFloat(form.berat_badan) : null;
+        const tbNum = form.tinggi_badan ? parseFloat(form.tinggi_badan) : null;
+        if (bbNum && tbNum && tbNum > 0) {
+          const imt = bbNum / Math.pow(tbNum / 100, 2);
+          statusGizi =
+            imt < 18.5 ? "Underweight (Kurus)"
+            : imt < 25 ? "Normal"
+            : imt < 30 ? "Overweight (Berlebih)"
+            : "Obesitas";
+        }
+      }
+      // isBumil -> statusGizi tetap null (indikator LILA/TD, bukan IMT/z-score).
+
       const payload = {
         ...form,
         anggota_id: anggota.id,
@@ -573,9 +593,9 @@ export default function Meja2() {
         z_score_bbu: analysis?.z_bbu ?? null,
         z_score_tbu: analysis?.z_tbu ?? null,
         z_score_bbtb: analysis?.z_bbtb ?? null,
-        status_gizi: analysis?.status_bbu?.label ?? (form.status_gizi || "Normal"),
-        // M2-010: tanpa baseline -> "data_baru", JANGAN "naik".
-        status_pertumbuhan: analysis?.statusPertumbuhan ?? "data_baru",
+        status_gizi: statusGizi,
+        // M2-010: pertumbuhan bulanan hanya relevan untuk anak; selain itu null.
+        status_pertumbuhan: isAnak ? (analysis?.statusPertumbuhan ?? "data_baru") : null,
         risiko: risikoStructured,
       };
       // M2-003: kunjunganId tervalidasi sesi aktif.
