@@ -11,7 +11,7 @@ import { maskNik } from "@/lib/utils";
 
 export default function IntegrasiSinduksadati() {
   const { showToast } = useAuth();
-  const { data, linkPendudukSinduksadati } = useSipandu();
+  const { data, linkPendudukSinduksadati, activeSessionId } = useSipandu();
 
   const [liveStatus, setLiveStatus] = useState<{ online: boolean; latencyMs: number; message: string; hint?: string; kode?: string }>({
     online: false,
@@ -83,8 +83,19 @@ export default function IntegrasiSinduksadati() {
   }
 
   // Generate Citizen 360 preview
+  // C-09: visit preview di-scope ke sesi aktif dulu; fallback history terbaru bila mode arsip/tanpa sesi.
   const chosenMember = data.anggota.find((a: any) => a.id === selectedPreviewId) || data.anggota[0];
-  const chosenVisit = data.kunjunganAktif.find((k: any) => k.anggota_id === chosenMember?.id) || data.kunjungan.find((k: any) => k.anggota_id === chosenMember?.id);
+  const sessionVisit = activeSessionId
+    ? (data.kunjunganAktif || []).find(
+        (k: any) =>
+          k.anggota_id === chosenMember?.id &&
+          (k.jadwal_posyandu_id || k.jadwal_id) === activeSessionId
+      )
+    : undefined;
+  const chosenVisit =
+    sessionVisit ||
+    (data.kunjunganAktif || []).find((k: any) => k.anggota_id === chosenMember?.id) ||
+    (data.kunjungan || []).find((k: any) => k.anggota_id === chosenMember?.id);
   const citizen360Json = useMemo(() => {
     if (!chosenMember) return "{}";
     const payload = SinduksadatiService.formatCitizen360Payload(chosenMember, chosenVisit);

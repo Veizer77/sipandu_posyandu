@@ -9,6 +9,7 @@ import { useSipandu } from "@/lib/data-store";
 import { useAuth } from "@/lib/auth-context";
 import { statusImunisasi } from "@/utils/jadwalImunisasi";
 import { hitungUsia } from "@/utils/zscoreCalculator";
+import { normalizeImunisasiList } from "@/lib/meja2Logic";
 
 export default function BidanImunisasi() {
   const { data } = useSipandu();
@@ -19,7 +20,7 @@ export default function BidanImunisasi() {
     const diberikanByAnggota = new Map<string, Set<string>>();
     [...data.kunjungan, ...data.kunjunganAktif].forEach((k: any) => {
       const set = diberikanByAnggota.get(k.anggota_id) || new Set<string>();
-      (k?.pelayanan?.imunisasi || []).forEach((j: string) => set.add(j));
+      normalizeImunisasiList(k?.pelayanan).forEach((j: string) => set.add(j));
       diberikanByAnggota.set(k.anggota_id, set);
     });
 

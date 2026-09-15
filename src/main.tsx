@@ -38,6 +38,7 @@ const Pengaturan = React.lazy(() => import("@/pages/admin/Pengaturan").then(m =>
 const Pengguna = React.lazy(() => import("@/pages/admin/Pengaturan").then(m => ({ default: m.Pengguna })));
 const AuditLog = React.lazy(() => import("@/pages/admin/Pengaturan").then(m => ({ default: m.AuditLog })));
 import "./index.css";
+import "./components/print/print.css";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 

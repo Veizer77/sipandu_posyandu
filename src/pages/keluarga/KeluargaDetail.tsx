@@ -9,6 +9,8 @@ import { useAuth } from "@/lib/auth-context";
 import { useSipandu } from "@/lib/data-store";
 import { hitungUsia, klasifikasiSasaran, hitungHPL } from "@/utils/zscoreCalculator";
 import { statusImunisasi, type ImunisasiStatusItem } from "@/utils/jadwalImunisasi";
+import { normalizeImunisasiList } from "@/lib/meja2Logic";
+import { findExistingSessionVisit } from "@/lib/meja1Logic";
 import { CategoryBadge } from "@/components/meja/MejaShared";
 import { Avatar } from "@/components/Avatar";
 import { maskNik, formatTanggalSingkat } from "@/lib/utils";
@@ -101,7 +103,7 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
 export function AnggotaDetail() {
   const { anggotaId } = useParams();
   const { showToast } = useAuth();
-  const { data, selesaikanKehamilan } = useSipandu();
+  const { data, selesaikanKehamilan, activeSessionId } = useSipandu();
   const { currentRole } = useAuth();
   const a = data.anggota.find((x: any) => x.id === anggotaId);
   if (!a) {
@@ -112,7 +114,14 @@ export function AnggotaDetail() {
   const usia = hitungUsia(a.tanggal_lahir);
   const klas = klasifikasiSasaran(usia, a.jenis_kelamin, a.status_hamil);
   const kunjungan = data.kunjungan.filter((k: any) => k.anggota_id === a.id);
-  const activeVisit = data.kunjunganAktif.find((k: any) => k.anggota_id === a.id);
+  // F-03: visit aktif di-scope ke sesi aktif (tanpa sesi aktif = tidak ada visit aktif).
+  const activeVisit = activeSessionId
+    ? findExistingSessionVisit(
+        [...(data.kunjunganAktif || []), ...(data.kunjungan || [])],
+        a.id,
+        activeSessionId
+      )
+    : undefined;
   const keluarga = data.keluarga.find((k: any) => k.id === a.keluarga_id);
   const hplInfo = a.status_hamil ? hitungHPL(a.hpht) : null;
 
@@ -130,7 +139,7 @@ export function AnggotaDetail() {
   const isAnakAnggota = a.kategori === "bayi" || a.kategori === "balita";
   const diberikanSet = new Set<string>();
   [...kunjungan, ...(activeVisit ? [activeVisit] : [])].forEach((k: any) => {
-    (k?.pelayanan?.imunisasi || []).forEach((j: string) => diberikanSet.add(j));
+    normalizeImunisasiList(k?.pelayanan).forEach((j: string) => diberikanSet.add(j));
   });
   const imunisasiStatus: ImunisasiStatusItem[] = isAnakAnggota
     ? statusImunisasi(usia?.totalBulan || 0, Array.from(diberikanSet))

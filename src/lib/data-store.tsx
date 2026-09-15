@@ -7,9 +7,8 @@ import React, { createContext, useContext, useEffect, useState, useCallback, use
 import { useAuth } from "./auth-context";
 import { dbService } from "@/services/dbService";
 import { hitungUsia, klasifikasiSasaran, deteksiRisikoSesi } from "@/utils/zscoreCalculator";
+import { findExistingSessionVisit } from "@/lib/meja1Logic";
 import seedData from "./seedData";
-
-const STORAGE_KEY = "sipandu_db_v3_state";
 
 export interface DataStoreState {
   posyandu: any;
@@ -25,22 +24,44 @@ export interface DataStoreState {
   notifikasi: any[];
   auditLogs: any[];
   penyuluhan: any[];
+  /** M5-019: error baca terakhir (null = OK); bedakan "kosong" dari "gagal baca". */
+  penyuluhanError: string | null;
+  /** RK-015: rencana kunjungan rumah (persist DB, lintas sesi). */
+  rencanaKunjungan: any[];
+  /** RK-022: sesi terakhir ditutup (untuk tampilan arsip read-only). */
+  sesiArsipId: string | null;
   risiko: any[];
 }
 
 interface SipanduContextValue {
   data: DataStoreState;
   isLoadingDb: boolean;
+  /** ID sesi aktif; null bila tidak ada / ambigu (>1 aktif). (MEJA-2 M2-001) */
+  activeSessionId: string | null;
   refreshFromDb: (silent?: boolean) => Promise<void>;
-  checkInPeserta: (anggotaId: string, jadwalId?: string) => Promise<{ success: boolean; visit?: any; message: string }>;
-  updatePengukuran: (anggotaId: string, pengukuran: any) => Promise<void>;
-  updatePencatatan: (anggotaId: string, catatan: any) => Promise<void>;
-  updatePelayanan: (anggotaId: string, pelayanan: any) => Promise<void>;
+  checkInPeserta: (anggotaId: string) => Promise<{ success: boolean; visit?: any; message: string }>;
+  updatePengukuran: (anggotaId: string, pengukuran: any, opts?: { kunjunganId?: string }) => Promise<void>;
+  updatePencatatan: (
+    anggotaId: string,
+    catatan: any,
+    opts?: { kunjunganId?: string; expectedUpdatedAt?: string | null }
+  ) => Promise<{ action: "created" | "updated"; id?: string; updatedAt?: string | null }>;
+  updatePelayanan: (
+    anggotaId: string,
+    pelayanan: any,
+    opts?: { kunjunganId?: string; expectedUpdatedAt?: string | null }
+  ) => Promise<{ action: "created" | "updated"; id?: string; updatedAt?: string | null; imunisasiDisimpan?: number }>;
+  reopenKunjungan: (
+    kunjunganId: string,
+    target?: "meja_2_pengukuran" | "meja_3_pencatatan" | "meja_4_pelayanan"
+  ) => Promise<{ kunjunganId: string; target: string }>;
   tambahKeluarga: (keluargaData: any) => Promise<any>;
   tambahAnggota: (anggotaData: any) => Promise<any>;
   tambahJadwal: (jadwalData: any) => Promise<any>;
-  updateJadwalStatus: (jadwalId: string, status: "draft" | "aktif" | "selesai" | "dibatalkan") => Promise<void>;
-  tambahPenyuluhan: (penyuluhanData: any) => void;
+  updateJadwalStatus: (jadwalId: string, status: "draft" | "aktif" | "dibatalkan") => Promise<void>;
+  tambahPenyuluhan: (penyuluhanData: any) => Promise<{ row: any; action: "created" | "existed" }>;
+  ubahPenyuluhan: (id: string, patch: any) => Promise<any>;
+  hapusPenyuluhan: (id: string) => Promise<void>;
   updateKeluarga: (id: string, patch: any) => Promise<void>;
   updateAnggota: (id: string, patch: any) => Promise<void>;
   selesaikanKehamilan: (anggotaId: string) => Promise<void>;
@@ -48,12 +69,15 @@ interface SipanduContextValue {
    bukaKunciKunjungan: (kunjunganId: string) => Promise<void>;
   updateStatusRisiko: (risikoId: string, status: "aktif" | "ditangani" | "diabaikan") => Promise<void>;
    verifikasiBulkKunjungan: (kunjunganIds: string[], status?: "valid" | "draft" | "diperiksa") => Promise<void>;
-  tutupSesiHariH: (jadwalId: string) => Promise<void>;
+  tutupSesiHariH: (jadwalId: string) => Promise<{ closedCount: number; notifCount: number }>;
+  jadwalkanKunjunganRumah: (anggotaId: string, alasan?: string | null) => Promise<{ row: any; action: "created" | "existed" }>;
+  updateStatusRencana: (id: string, status: "terjadwal" | "selesai" | "dibatalkan") => Promise<any>;
   linkPendudukSinduksadati: (anggotaId: string, pendudukId: string, residentCode?: string) => void;
   updateUserPhoto: (id: string, foto: string) => Promise<void>;
   tandaiSemuaNotifikasiDibaca: () => void;
   resetToDefaultSeed: () => Promise<void>;
   purgeAllTransactions: () => Promise<void>;
+  sinkronkanDataKeCloud: () => Promise<{ success: boolean; syncedCount: number; message: string }>;
 }
 
 const SipanduContext = createContext<SipanduContextValue | undefined>(undefined);
@@ -102,38 +126,37 @@ const DEFAULT_EMPTY_STATE: DataStoreState = {
   notifikasi: [],
   auditLogs: [],
   penyuluhan: [],
+  penyuluhanError: null,
+  rencanaKunjungan: [],
+  // RK-022: arsip terakhir bertahan melewati refresh (localStorage) agar
+  // tampilan arsip + cetak rekap tidak hilang setelah reload halaman.
+  sesiArsipId: loadSesiArsipId(),
   risiko: [],
 };
 
-function loadInitialState(): DataStoreState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && parsed.anggota && parsed.keluarga && Array.isArray(parsed.kunjunganAktif)) {
-        const usersList = (parsed.users && parsed.users.length > 0 ? parsed.users : seedData.users || []).map((u: any) => {
-          if (!u.foto) {
-            const seedMatch = (seedData.users || []).find((su: any) => su.peran === u.peran || su.email === u.email);
-            if (seedMatch?.foto) return { ...u, foto: seedMatch.foto };
-          }
-          return u;
-        });
-        return {
-          ...parsed,
-          users: usersList,
-          anggota: normalizeKategoriList(parsed.anggota),
-        };
-      }
-    }
-  } catch (e) {
-    console.warn("Failed to read from localStorage", e);
-  }
+const SESI_ARSIP_KEY = "sipandu_sesi_arsip_terakhir";
 
-  return DEFAULT_EMPTY_STATE;
+function loadSesiArsipId(): string | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    return localStorage.getItem(SESI_ARSIP_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveSesiArsipId(jadwalId: string | null): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (jadwalId) localStorage.setItem(SESI_ARSIP_KEY, jadwalId);
+    else localStorage.removeItem(SESI_ARSIP_KEY);
+  } catch {
+    // Penyimpanan lokal tidak tersedia — arsip hanya sesi berjalan.
+  }
 }
 
 export function SipanduDataProvider({ children }: { children: React.ReactNode }) {
-  const [data, setData] = useState<DataStoreState>(loadInitialState);
+  const [data, setData] = useState<DataStoreState>(DEFAULT_EMPTY_STATE);
   const [isLoadingDb, setIsLoadingDb] = useState<boolean>(false);
   const { currentUser, showToast } = useAuth();
   const checkInLocks = useRef<Set<string>>(new Set());
@@ -145,63 +168,50 @@ export function SipanduDataProvider({ children }: { children: React.ReactNode })
     return locked && !canUnlock;
   }, [currentUser]);
 
-  // Save to localStorage on any state mutation
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    } catch (e) {
-      console.error("Gagal menyimpan data ke localStorage", e);
-    }
-  }, [data]);
-
-  // Load live data from InsForge DB on mount
+  // Load live data DIRECTLY from InsForge DB (100% cloud database, no localStorage)
   const refreshFromDb = useCallback(async (silent = false) => {
     if (!dbService.isConfigured()) return;
     if (!silent) setIsLoadingDb(true);
     try {
-      const [pos, org, users, kel, agt, jadwal, visits, logs, risikos, penyuluhans] = await Promise.all([
+      // M5-019: kegagalan baca penyuluhan dicatat terpisah (null = OK).
+      let penyuluhanReadError: string | null = null;
+      // Gagal fetch kunjungan ≠ kunjungan kosong: bedakan agar polling yang
+      // gagal sesaat tidak menghapus seluruh antrean/arsip lokal (desync).
+      let visitsReadError = false;
+      const [pos, org, users, kel, agt, jadwal, visits, logs, risikos, penyuluhans, rencana] = await Promise.all([
         dbService.getPosyandu().catch(() => null),
         dbService.getOrganisasi().catch(() => []),
         dbService.getUsers().catch(() => []),
         dbService.getKeluarga().catch(() => []),
         dbService.getAnggota().catch(() => []),
         dbService.getJadwal().catch(() => []),
-        dbService.getKunjunganWithDetails().catch(() => []),
+        dbService.getKunjunganWithDetails().catch(() => {
+          visitsReadError = true;
+          return null;
+        }),
         dbService.getAuditLogs().catch(() => []),
         dbService.getRisiko().catch(() => []),
-        dbService.getPenyuluhan().catch(() => []),
+        dbService.getPenyuluhan().catch((e) => {
+          penyuluhanReadError = e?.message || "Gagal membaca data penyuluhan dari database.";
+          return null;
+        }),
+        dbService.getRencanaKunjungan().catch(() => []),
       ]);
 
       setData((prev) => {
         const nextKeluarga = kel && kel.length > 0 ? kel : prev.keluarga;
         const nextAnggota = agt && agt.length > 0 ? normalizeKategoriList(agt) : prev.anggota;
         const nextJadwal = jadwal && jadwal.length > 0 ? jadwal : prev.jadwal;
-        const nextVisits = visits || [];
+        const nextVisits = visitsReadError
+          ? [...prev.kunjunganAktif, ...prev.kunjungan]
+          : (visits || []);
         const nextRisiko = risikos && risikos.length > 0 ? risikos : (prev.risiko || []);
-        const nextPenyuluhan = (penyuluhans && penyuluhans.length > 0) ? penyuluhans : (prev.penyuluhan || []);
+        // Error baca: pertahankan data lama + tandai (jangan tampilkan "kosong").
+        const nextPenyuluhan = penyuluhanReadError ? (prev.penyuluhan || []) : (penyuluhans || []);
 
-        // Active visits: those with status not 'selesai' or part of current active schedule
+        // Active visits: those with status not 'selesai' directly from InsForge database
         const activeVisits = nextVisits.filter((v: any) => v.status_alur !== "selesai");
         const historyVisits = nextVisits.filter((v: any) => v.status_alur === "selesai");
-
-        // Non-destructive merge for kunjunganAktif to protect local input / offline updates:
-        const mergedAktif = activeVisits.map((dbV: any) => {
-          const localV = prev.kunjunganAktif.find((lv: any) => lv.id === dbV.id || lv.anggota_id === dbV.anggota_id);
-          if (!localV) return dbV;
-          return {
-            ...dbV,
-            ...localV,
-            status_alur: dbV.status_alur === "selesai" ? "selesai" : (localV.status_alur || dbV.status_alur),
-            pengukuran: { ...(dbV.pengukuran || {}), ...(localV.pengukuran || {}) },
-            catatan: { ...(dbV.catatan || {}), ...(localV.catatan || {}) },
-            pelayanan: { ...(dbV.pelayanan || {}), ...(localV.pelayanan || {}) },
-            risiko: (localV.risiko && localV.risiko.length > 0) ? localV.risiko : (dbV.risiko || []),
-          };
-        });
-        const dbIds = new Set(activeVisits.map((v: any) => v.id));
-        const dbAnggotaIds = new Set(activeVisits.map((v: any) => v.anggota_id));
-        const purelyLocal = prev.kunjunganAktif.filter((lv: any) => !dbIds.has(lv.id) && !dbAnggotaIds.has(lv.anggota_id));
-        const finalKunjunganAktif = [...mergedAktif, ...purelyLocal];
 
         return {
           ...prev,
@@ -219,9 +229,11 @@ export function SipanduDataProvider({ children }: { children: React.ReactNode })
           anggota: nextAnggota,
           jadwal: nextJadwal,
           kunjungan: historyVisits,
-          kunjunganAktif: finalKunjunganAktif,
+          kunjunganAktif: activeVisits,
           risiko: nextRisiko,
           penyuluhan: nextPenyuluhan,
+          penyuluhanError: penyuluhanReadError,
+          rencanaKunjungan: rencana || [],
           auditLogs: logs && logs.length > 0 ? logs.map((l: any) => ({
             id: l.id,
             user: l.data_baru?.user || "Sistem",
@@ -233,15 +245,81 @@ export function SipanduDataProvider({ children }: { children: React.ReactNode })
         };
       });
     } catch (err) {
-      console.warn("Could not sync with InsForge DB, using local state:", err);
+      console.error("Gagal sinkronisasi dengan database InsForge:", err);
     } finally {
       if (!silent) setIsLoadingDb(false);
     }
   }, []);
 
+  // Migrasi satu kali & pembersihan total: Angkat data tersisa dari localStorage ke InsForge DB lalu hapus localStorage permanen
+  useEffect(() => {
+    async function purgeAndMigrateLegacyStorage() {
+      try {
+        const keys = ["sipandu_db_v3_state", "sipandu_state_v3"];
+        for (const k of keys) {
+          const raw = localStorage.getItem(k);
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw);
+              const allVisits = [...(parsed?.kunjunganAktif || []), ...(parsed?.kunjungan || [])];
+              const visitsWithInput = allVisits.filter((v: any) =>
+                (v.pengukuran && Object.keys(v.pengukuran).length > 0) ||
+                (v.catatan && Object.keys(v.catatan).length > 0) ||
+                (v.pelayanan && Object.keys(v.pelayanan).length > 0)
+              );
+
+              if (visitsWithInput.length > 0 && dbService.isConfigured()) {
+                const dbAnggota = await dbService.getAnggota().catch(() => []);
+                const agtByNik = new Map<string, any>();
+                (dbAnggota || []).forEach((a: any) => agtByNik.set(a.nik, a));
+                const dbJadwal = await dbService.getJadwal().catch(() => []);
+                // Hanya migrasikan ke sesi aktif; jangan fallback ke jadwal[0] (risiko salah sesi)
+                const targetJadwalId = dbJadwal.find((j: any) => j.status === "aktif")?.id;
+
+                for (const v of visitsWithInput) {
+                  let realAgt = (dbAnggota || []).find((a: any) => a.id === v.anggota_id);
+                  if (!realAgt) {
+                    const localAgt = (parsed.anggota || []).find((a: any) => a.id === v.anggota_id);
+                    if (localAgt?.nik) realAgt = agtByNik.get(localAgt.nik);
+                  }
+                  if (!realAgt || !targetJadwalId) continue;
+
+                  const res = await dbService.checkIn(realAgt.id, targetJadwalId).catch(() => null);
+                  const dbVisitId = res?.visit?.id;
+                  if (!dbVisitId) continue;
+
+                  if (v.pengukuran && Object.keys(v.pengukuran).length > 0) {
+                    await dbService.savePengukuran(dbVisitId, v.pengukuran).catch(() => undefined);
+                  }
+                  if (v.catatan && Object.keys(v.catatan).length > 0) {
+                    await dbService.savePencatatan(dbVisitId, v.catatan).catch(() => undefined);
+                  }
+                  if (v.pelayanan && Object.keys(v.pelayanan).length > 0) {
+                    await dbService.savePelayanan(dbVisitId, v.pelayanan).catch(() => undefined);
+                  }
+                }
+              }
+            } catch (innerErr) {
+              console.warn("Legacy storage parse error:", innerErr);
+            } finally {
+              // Hapus total dari localStorage agar tidak ada lagi jejak penyimpanan lokal
+              localStorage.removeItem(k);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Storage cleanup error:", e);
+      } finally {
+        refreshFromDb(true);
+      }
+    }
+
+    purgeAndMigrateLegacyStorage();
+  }, [refreshFromDb]);
+
   useEffect(() => {
     refreshFromDb();
-  }, [refreshFromDb]);
+  }, [refreshFromDb, currentUser?.id]);
 
   const addAuditLog = useCallback(async (aksi: string, tabel: string, recordCode: string, deskripsi: string) => {
     const newLog = {
@@ -277,385 +355,388 @@ export function SipanduDataProvider({ children }: { children: React.ReactNode })
     }
   }, [currentUser]);
 
-  const checkInPeserta = useCallback(async (anggotaId: string, jadwalId?: string) => {
+  const checkInPeserta = useCallback(async (anggotaId: string) => {
     const anggota = data.anggota.find((a) => a.id === anggotaId);
     if (!anggota) return { success: false, message: "Peserta tidak ditemukan" };
 
-    // S4: kunjungan selalu tercatat pada SESI AKTIF (bukan ID hardcode)
+    // S4: kunjungan selalu tercatat pada SESI AKTIF (bukan ID bebas/hardcode)
     const sesi = data.jadwal.find((j) => j.status === "aktif");
-    const targetJadwalId = jadwalId || sesi?.id;
+    const targetJadwalId = sesi?.id;
     if (!targetJadwalId) {
       showToast("Tidak ada sesi aktif. Buka sesi hari H di halaman Jadwal Posyandu dulu.", "warning");
       return { success: false, message: "Tidak ada sesi aktif" };
     }
 
-    if (checkInLocks.current.has(anggotaId)) {
-      const already = data.kunjunganAktif.find((k) => k.anggota_id === anggotaId);
+    // Cegah race: lock per anggota+sesi (bukan anggota global)
+    const lockKey = `${targetJadwalId}:${anggotaId}`;
+    if (checkInLocks.current.has(lockKey)) {
+      const already = findExistingSessionVisit(data.kunjunganAktif, anggotaId, targetJadwalId);
       return { success: true, visit: already, message: "Check-in sedang diproses" };
     }
-    checkInLocks.current.add(anggotaId);
+    checkInLocks.current.add(lockKey);
 
     try {
-      const already = data.kunjunganAktif.find((k) => k.anggota_id === anggotaId);
+      // Existing check HARUS dibatasi pada sesi aktif (bukan anggota lintas sesi)
+      const already = findExistingSessionVisit(data.kunjunganAktif, anggotaId, targetJadwalId);
       if (already) {
         return { success: true, visit: already, message: "Peserta sudah check-in" };
       }
 
-      let serverVisit: any = null;
-      if (dbService.isConfigured()) {
-        try {
-          const res = await dbService.checkIn(anggotaId, targetJadwalId);
-          serverVisit = res.visit;
-        } catch (err) {
-          console.warn("CheckIn DB error, falling back to local:", err);
-        }
+      if (!dbService.isConfigured()) {
+        showToast("Database InsForge belum terhubung.", "danger");
+        return { success: false, message: "Database InsForge belum terhubung" };
       }
 
-      const newVisit = {
-        id: serverVisit?.id || `kunj-live-${Date.now()}`,
-        jadwal_id: targetJadwalId,
-        jadwal_posyandu_id: targetJadwalId,
-        anggota_id: anggotaId,
-        waktu_hadir: new Date().toISOString(),
-        status_verifikasi: "draft",
-        status_alur: "meja_2_pengukuran",
-        pengukuran: {},
-        pelayanan: {},
-        catatan: {},
-        risiko: [],
-      };
+      const res = await dbService.checkIn(anggotaId, targetJadwalId);
+      const serverVisit = res.visit;
+      if (!serverVisit || !serverVisit.id) {
+        showToast("Gagal mendaftarkan kunjungan ke database InsForge.", "danger");
+        return { success: false, message: "Gagal mendaftarkan kunjungan ke database" };
+      }
 
-      setData((prev) => {
-        if (prev.kunjunganAktif.some((k) => k.anggota_id === anggotaId)) {
-          return prev;
-        }
-        return {
-          ...prev,
-          kunjunganAktif: [newVisit, ...prev.kunjunganAktif],
-        };
-      });
-
-      addAuditLog("CREATE", "kunjungan", newVisit.id, `Presensi kehadiran: ${anggota.nama}`);
-      return { success: true, visit: newVisit, message: "Check-in berhasil" };
+      await refreshFromDb(true);
+      await addAuditLog("CREATE", "kunjungan", serverVisit.id, `Presensi kehadiran: ${anggota.nama}`);
+      return { success: true, visit: serverVisit, message: "Check-in berhasil disimpan ke database" };
+    } catch (err: any) {
+      console.error("CheckIn error:", err);
+      showToast(`Gagal check-in: ${err.message || "Kesalahan database"}`, "danger");
+      return { success: false, message: err.message || "Gagal check-in" };
     } finally {
-      checkInLocks.current.delete(anggotaId);
+      checkInLocks.current.delete(lockKey);
     }
-  }, [data.anggota, data.kunjunganAktif, data.jadwal, addAuditLog, showToast]);
+  }, [data.anggota, data.kunjunganAktif, data.jadwal, addAuditLog, showToast, refreshFromDb]);
 
-  const updatePengukuran = useCallback(async (anggotaId: string, pengukuran: any) => {
-    const activeVisit = data.kunjunganAktif.find((k) => k.anggota_id === anggotaId);
+  // M2-001: sesi aktif tunggal; null bila tidak ada/ambigu.
+  const activeSessionId: string | null = (() => {
+    const aktif = (data.jadwal || []).filter((j: any) => j?.status === "aktif");
+    return aktif.length === 1 ? aktif[0].id : null;
+  })();
 
+  const updatePengukuran = useCallback(async (anggotaId: string, pengukuran: any, opts?: { kunjunganId?: string }) => {
+    // M2-002/M2-003: visit HARUS milik sesi aktif. Tanpa fallback jadwal[0],
+    // tanpa auto-create visit — route tanpa visit aktif diblokir di UI (M2-024).
+    const sessionId = (() => {
+      const aktif = (data.jadwal || []).filter((j: any) => j?.status === "aktif");
+      return aktif.length === 1 ? aktif[0].id : null;
+    })();
+    if (!sessionId) {
+      const msg = "Tidak ada sesi aktif. Buka sesi hari H di halaman Jadwal Posyandu dulu.";
+      showToast(msg, "warning");
+      throw new Error(msg);
+    }
+
+    const sessionVisit = data.kunjunganAktif.find(
+      (k) => k.anggota_id === anggotaId && (k.jadwal_posyandu_id || k.jadwal_id) === sessionId
+    );
+
+    let visitId = opts?.kunjunganId || sessionVisit?.id;
+    // kunjunganId eksplisit harus cocok dengan anggota + sesi (M2-003).
+    if (opts?.kunjunganId) {
+      const claimed = data.kunjunganAktif.find((k) => k.id === opts.kunjunganId);
+      if (!claimed || claimed.anggota_id !== anggotaId ||
+        (claimed.jadwal_posyandu_id || claimed.jadwal_id) !== sessionId) {
+        throw new Error("ID kunjungan tidak valid untuk peserta/sesi ini; mutasi ditolak.");
+      }
+    }
+
+    const isUuid = typeof visitId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(visitId);
+    if (!isUuid) {
+      const msg = "Peserta belum terdaftar di Meja 1 pada sesi ini. Lakukan check-in dulu.";
+      showToast(msg, "warning");
+      throw new Error(msg);
+    }
+
+    const activeVisit = sessionVisit || data.kunjunganAktif.find((k) => k.id === visitId);
     if (isLockedFromKader(activeVisit)) {
-      showToast("Data kunjungan ini sudah tervalidasi Bidan dan tidak dapat diubah. Minta Bidan/Admin untuk membuka kunci.", "warning");
-      return;
+      const msg = "Data kunjungan ini sudah tervalidasi Bidan dan tidak dapat diubah. Minta Bidan/Admin untuk membuka kunci.";
+      showToast(msg, "warning");
+      throw new Error(msg);
     }
 
-    setData((prev) => {
-      const updated = prev.kunjunganAktif.map((k) => {
-        if (k.anggota_id === anggotaId) {
+    if (!dbService.isConfigured()) {
+      const msg = "Database InsForge tidak terhubung.";
+      showToast(msg, "danger");
+      throw new Error(msg);
+    }
+
+    try {
+      setIsLoadingDb(true);
+
+      // M2-007: urutan idempoten (upsert pengukuran -> replace risiko -> status).
+      // Aman di-retry karena setiap langkah idempoten (M2-006/M2-008).
+      await dbService.savePengukuran(visitId, { ...pengukuran, anggota_id: anggotaId });
+
+      // M2-008/M2-009: replace SELALU — termasuk risiko kosong (clear stale).
+      const risikoRows = Array.isArray(pengukuran.risiko)
+        ? pengukuran.risiko.map((r: any) => {
+          const isObj = typeof r === "object" && r !== null;
           return {
-            ...k,
-            status_alur: "meja_3_pencatatan",
-            pengukuran: { ...(k.pengukuran || {}), ...pengukuran },
-            risiko: pengukuran.risiko || k.risiko || [],
+            kunjungan_id: visitId,
+            anggota_id: anggotaId,
+            kode_risiko: (isObj && (r.kode_risiko || r.kode)) || "R-GEN",
+            deskripsi: (isObj && (r.deskripsi || r.judul)) || String(r),
+            severity: (isObj && r.severity) || "warning",
+            tindak_lanjut: (isObj && (r.tindak_lanjut || r.tindakLanjut)) || "Konseling & Pantau Rutin",
           };
-        }
-        return k;
-      });
+        })
+        : [];
+      await dbService.replaceRisiko(visitId, risikoRows);
 
-      const newRisikoItems = Array.isArray(pengukuran.risiko) ? pengukuran.risiko : [];
-      const existingIds = new Set((prev.risiko || []).map((r: any) => r.id));
-      const newlyAdded = newRisikoItems.filter((r: any) => r.id && !existingIds.has(r.id));
-      const mergedRisiko = [...(prev.risiko || []), ...newlyAdded];
-
-      return { ...prev, kunjunganAktif: updated, risiko: mergedRisiko };
-    });
-
-    if (activeVisit && dbService.isConfigured()) {
-      try {
-        await dbService.savePengukuran(activeVisit.id, pengukuran);
-      } catch (e) {
-        console.warn("Failed to persist pengukuran to InsForge DB:", e);
-      }
-
-      if (Array.isArray(pengukuran.risiko) && pengukuran.risiko.length > 0) {
-        try {
-          const risikoRows = pengukuran.risiko.map((r: any) => {
-            const isObj = typeof r === "object" && r !== null;
-            return {
-              kunjungan_id: activeVisit.id,
-              anggota_id: anggotaId,
-              kode_risiko: (isObj && (r.kode_risiko || r.kode)) || "R-GEN",
-              deskripsi: (isObj && (r.deskripsi || r.judul)) || String(r),
-              severity: (isObj && r.severity) || "warning",
-              tindak_lanjut: (isObj && (r.tindak_lanjut || r.tindakLanjut)) || "Konseling & Pantau Rutin",
-            };
-          });
-          await dbService.catatRisiko(risikoRows);
-        } catch (e) {
-          console.warn("Failed to persist risiko to InsForge DB:", e);
-        }
-      }
+      await refreshFromDb(true);
+      // M2-025: audit ditunggu setelah mutation sukses.
+      await addAuditLog("UPDATE", "pengukuran", anggotaId, "Menyimpan pengukuran antropometri Meja 2 ke database InsForge");
+    } catch (e: any) {
+      console.error("Gagal menyimpan pengukuran ke database:", e);
+      showToast(`Gagal menyimpan pengukuran: ${e.message || "Error"}`, "danger");
+      throw e;
+    } finally {
+      setIsLoadingDb(false);
     }
+  }, [data.kunjunganAktif, data.jadwal, addAuditLog, isLockedFromKader, showToast, refreshFromDb]);
 
-    addAuditLog("UPDATE", "pengukuran", anggotaId, "Memperbarui pengukuran antropometri Meja 2");
-  }, [data.kunjunganAktif, addAuditLog, isLockedFromKader, showToast]);
-
-  const updatePencatatan = useCallback(async (anggotaId: string, catatan: any) => {
-    const activeVisit = data.kunjunganAktif.find((k) => k.anggota_id === anggotaId);
-
-    if (isLockedFromKader(activeVisit)) {
-      showToast("Data kunjungan ini sudah tervalidasi Bidan dan tidak dapat diubah. Minta Bidan/Admin untuk membuka kunci.", "warning");
-      return;
+  // Guard alur: Meja 3/4 wajib visit sesi aktif (tanpa auto-create) + sudah diukur di Meja 2.
+  // Mencegah kasus "selesai tanpa ukur" (pengukuran dilewati via URL langsung).
+  const resolveSessionVisitOrThrow = useCallback((anggotaId: string, kunjunganId?: string) => {
+    const aktif = (data.jadwal || []).filter((j: any) => j?.status === "aktif");
+    const sessionId = aktif.length === 1 ? aktif[0].id : null;
+    if (!sessionId) {
+      const msg = "Tidak ada sesi aktif. Buka sesi hari H di halaman Jadwal Posyandu dulu.";
+      showToast(msg, "warning");
+      throw new Error(msg);
     }
-
-    setData((prev) => {
-      const updated = prev.kunjunganAktif.map((k) => {
-        if (k.anggota_id === anggotaId) {
-          return {
-            ...k,
-            status_alur: "meja_4_pelayanan",
-            catatan: { ...(k.catatan || {}), ...catatan },
-          };
-        }
-        return k;
-      });
-      return { ...prev, kunjunganAktif: updated };
-    });
-
-    if (activeVisit && dbService.isConfigured()) {
-      try {
-        await dbService.savePencatatan(activeVisit.id, catatan);
-      } catch (e) {
-        console.warn("Failed to persist pencatatan to InsForge DB:", e);
+    const sessionVisit = data.kunjunganAktif.find(
+      (k) => k.anggota_id === anggotaId && (k.jadwal_posyandu_id || k.jadwal_id) === sessionId
+    );
+    let visitId = kunjunganId || sessionVisit?.id;
+    if (kunjunganId) {
+      const claimed = data.kunjunganAktif.find((k) => k.id === kunjunganId);
+      if (!claimed || claimed.anggota_id !== anggotaId ||
+        (claimed.jadwal_posyandu_id || claimed.jadwal_id) !== sessionId) {
+        throw new Error("ID kunjungan tidak valid untuk peserta/sesi ini; mutasi ditolak.");
       }
     }
+    const isUuid = typeof visitId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(visitId);
+    if (!isUuid) {
+      const msg = "Peserta belum terdaftar di Meja 1 pada sesi ini. Lakukan check-in dulu.";
+      showToast(msg, "warning");
+      throw new Error(msg);
+    }
+    const visit = sessionVisit || data.kunjunganAktif.find((k) => k.id === visitId);
+    if (isLockedFromKader(visit)) {
+      const msg = "Data kunjungan ini sudah tervalidasi Bidan dan tidak dapat diubah. Minta Bidan/Admin untuk membuka kunci.";
+      showToast(msg, "warning");
+      throw new Error(msg);
+    }
+    return visitId as string;
+  }, [data.jadwal, data.kunjunganAktif, isLockedFromKader, showToast]);
 
-    addAuditLog("UPDATE", "pencatatan", anggotaId, "Memperbarui pencatatan dan keluhan Meja 3");
-  }, [data.kunjunganAktif, addAuditLog, isLockedFromKader, showToast]);
-
-  const updatePelayanan = useCallback(async (anggotaId: string, pelayanan: any) => {
-    const activeVisit = data.kunjunganAktif.find((k) => k.anggota_id === anggotaId);
-
-    if (isLockedFromKader(activeVisit)) {
-      showToast("Data kunjungan ini sudah tervalidasi Bidan dan tidak dapat diubah. Minta Bidan/Admin untuk membuka kunci.", "warning");
-      return;
+  const updatePencatatan = useCallback(async (
+    anggotaId: string,
+    catatan: any,
+    opts?: { kunjunganId?: string; expectedUpdatedAt?: string | null }
+  ): Promise<{ action: "created" | "updated"; id?: string; updatedAt?: string | null }> => {
+    if (!dbService.isConfigured()) {
+      const msg = "Database InsForge tidak terhubung.";
+      showToast(msg, "danger");
+      throw new Error(msg);
     }
 
-    setData((prev) => {
-      const updated = prev.kunjunganAktif.map((k) => {
-        if (k.anggota_id === anggotaId) {
-          return {
-            ...k,
-            status_alur: "selesai",
-            pelayanan: { ...(k.pelayanan || {}), ...pelayanan },
-          };
-        }
-        return k;
-      });
-      return { ...prev, kunjunganAktif: updated };
-    });
-
-    if (activeVisit && dbService.isConfigured()) {
-      try {
-        await dbService.savePelayanan(activeVisit.id, pelayanan);
-      } catch (e) {
-        console.warn("Failed to persist pelayanan to InsForge DB:", e);
+    try {
+      setIsLoadingDb(true);
+      const visitId = resolveSessionVisitOrThrow(anggotaId, opts?.kunjunganId);
+      const sessionId = (() => {
+        const aktif = (data.jadwal || []).filter((j: any) => j?.status === "aktif");
+        return aktif.length === 1 ? aktif[0].id : "?";
+      })();
+      const nama = data.anggota.find((a) => a.id === anggotaId)?.nama || anggotaId;
+      // M3-010: peran aktor diteruskan agar service dapat menolak catatan_bidan dari Kader.
+      const result = await dbService.savePencatatan(
+        visitId,
+        { ...catatan, anggota_id: anggotaId },
+        { actorRole: currentUser?.peran, expectedUpdatedAt: opts?.expectedUpdatedAt ?? null }
+      );
+      await refreshFromDb(true);
+      // M3-016: audit memakai kunjunganId + sesi + peran aktor + aksi CREATE/UPDATE.
+      await addAuditLog(
+        result.action === "created" ? "CREATE" : "UPDATE",
+        "catatan_kunjungan",
+        visitId,
+        `Meja 3 ${result.action === "created" ? "mencatat baru" : "memperbarui catatan"}: ${nama} [sesi ${sessionId}]`
+      );
+      return result;
+    } catch (e: any) {
+      console.error("Gagal menyimpan catatan ke database:", e);
+      if (!(e as any)?.conflict) {
+        showToast(`Gagal menyimpan catatan: ${e.message || "Error"}`, "danger");
       }
+      throw e;
+    } finally {
+      setIsLoadingDb(false);
+    }
+  }, [resolveSessionVisitOrThrow, addAuditLog, showToast, refreshFromDb, data.jadwal, data.anggota, currentUser]);
+
+  const updatePelayanan = useCallback(async (
+    anggotaId: string,
+    pelayanan: any,
+    opts?: { kunjunganId?: string; expectedUpdatedAt?: string | null }
+  ): Promise<{ action: "created" | "updated"; id?: string; updatedAt?: string | null; imunisasiDisimpan?: number }> => {
+    if (!dbService.isConfigured()) {
+      const msg = "Database InsForge tidak terhubung.";
+      showToast(msg, "danger");
+      throw new Error(msg);
     }
 
-    addAuditLog("UPDATE", "pelayanan", anggotaId, "Menyelesaikan pelayanan kesehatan Meja 4");
-  }, [data.kunjunganAktif, addAuditLog, isLockedFromKader, showToast]);
+    try {
+      setIsLoadingDb(true);
+      const visitId = resolveSessionVisitOrThrow(anggotaId, opts?.kunjunganId);
+      const sessionId = (() => {
+        const aktif = (data.jadwal || []).filter((j: any) => j?.status === "aktif");
+        return aktif.length === 1 ? aktif[0].id : "?";
+      })();
+      const nama = data.anggota.find((a) => a.id === anggotaId)?.nama || anggotaId;
+      // M4-016: peran aktor diteruskan agar service dapat menolak imunisasi dari Kader.
+      const result = await dbService.savePelayanan(
+        visitId,
+        { ...pelayanan, anggota_id: anggotaId },
+        { actorRole: currentUser?.peran, expectedUpdatedAt: opts?.expectedUpdatedAt ?? null }
+      );
+      await refreshFromDb(true);
+      // M4-017: audit memakai kunjunganId + sesi + peran aktor + aksi CREATE/UPDATE.
+      await addAuditLog(
+        result.action === "created" ? "CREATE" : "UPDATE",
+        "pelayanan",
+        visitId,
+        `Meja 4 ${result.action === "created" ? "mencatat pelayanan baru" : "memperbarui pelayanan"}: ${nama} [sesi ${sessionId}]`
+      );
+      return result;
+    } catch (e: any) {
+      console.error("Gagal menyimpan pelayanan ke database:", e);
+      if (!(e as any)?.conflict) {
+        showToast(`Gagal menyimpan pelayanan: ${e.message || "Error"}`, "danger");
+      }
+      throw e;
+    } finally {
+      setIsLoadingDb(false);
+    }
+  }, [resolveSessionVisitOrThrow, addAuditLog, showToast, refreshFromDb, data.jadwal, data.anggota, currentUser]);
+
+  // M4-022 — Reopen resmi visit selesai ke tahap koreksi (Bidan/Admin + audit REOPEN).
+  const reopenKunjungan = useCallback(async (
+    kunjunganId: string,
+    target: "meja_2_pengukuran" | "meja_3_pencatatan" | "meja_4_pelayanan" = "meja_4_pelayanan"
+  ) => {
+    const role = currentUser?.peran;
+    if (role !== "bidan" && role !== "super_admin") {
+      const msg = "Membuka kembali kunjungan selesai hanya untuk Bidan/Admin.";
+      showToast(msg, "warning");
+      throw new Error(msg);
+    }
+    if (!dbService.isConfigured()) {
+      const msg = "Database InsForge tidak terhubung.";
+      showToast(msg, "danger");
+      throw new Error(msg);
+    }
+    try {
+      setIsLoadingDb(true);
+      const res = await dbService.reopenAlur(kunjunganId, target, role);
+      await refreshFromDb(true);
+      await addAuditLog("REOPEN", "kunjungan", kunjunganId, `Kunjungan selesai dibuka kembali ke ${target} oleh ${role}.`);
+      return res;
+    } catch (e: any) {
+      console.error("Gagal membuka kembali kunjungan:", e);
+      showToast(`Gagal membuka kembali: ${e.message || "Error"}`, "danger");
+      throw e;
+    } finally {
+      setIsLoadingDb(false);
+    }
+  }, [addAuditLog, showToast, refreshFromDb, currentUser]);
 
   const tambahKeluarga = useCallback(async (keluargaData: any) => {
-    let serverKeluarga: any = null;
-    if (dbService.isConfigured()) {
-      try {
-        serverKeluarga = await dbService.createKeluarga(keluargaData);
-      } catch (e) {
-        console.warn("Failed to create keluarga in InsForge DB:", e);
-      }
+    if (!dbService.isConfigured()) {
+      showToast("Database InsForge tidak terhubung.", "danger");
+      throw new Error("Database InsForge tidak terhubung");
     }
-
-    const newKeluarga = serverKeluarga || {
-      id: `kk-live-${Date.now()}`,
-      nomor_kk: keluargaData.nomor_kk,
-      nama_kepala_keluarga: keluargaData.nama_kepala_keluarga,
-      alamat: keluargaData.alamat || "Jl. Mojorejo RW 06",
-      rt: keluargaData.rt || "14",
-      rw: "06",
-      kelurahan: "Mojorejo",
-      kecamatan: "Junrejo",
-      status_ekonomi: keluargaData.status_ekonomi || "sejahtera_2",
-    };
-
-    setData((prev) => ({
-      ...prev,
-      keluarga: [newKeluarga, ...prev.keluarga],
-    }));
-
-    addAuditLog("CREATE", "keluarga", newKeluarga.nomor_kk, `Mendaftarkan KK baru: ${newKeluarga.nama_kepala_keluarga}`);
-    return newKeluarga;
-  }, [addAuditLog]);
+    const serverKeluarga = await dbService.createKeluarga(keluargaData);
+    await refreshFromDb(true);
+    addAuditLog("CREATE", "keluarga", serverKeluarga.nomor_kk, `Mendaftarkan KK baru ke database: ${serverKeluarga.nama_kepala_keluarga}`);
+    return serverKeluarga;
+  }, [addAuditLog, refreshFromDb, showToast]);
 
   const tambahAnggota = useCallback(async (anggotaData: any) => {
-    let serverAnggota: any = null;
-    if (dbService.isConfigured()) {
-      try {
-        serverAnggota = await dbService.createAnggota(anggotaData);
-      } catch (e) {
-        console.warn("Failed to create anggota in InsForge DB:", e);
-      }
+    if (!dbService.isConfigured()) {
+      showToast("Database InsForge tidak terhubung.", "danger");
+      throw new Error("Database InsForge tidak terhubung");
     }
-
-    const newAnggota = serverAnggota || {
-      id: `agt-live-${Date.now()}`,
-      keluarga_id: anggotaData.keluarga_id,
-      nik: anggotaData.nik,
-      nama: anggotaData.nama,
-      jenis_kelamin: anggotaData.jenis_kelamin,
-      tanggal_lahir: anggotaData.tanggal_lahir,
-      hubungan_keluarga: anggotaData.hubungan_keluarga || "Anak",
-      kategori: anggotaData.kategori,
-      status_aktif: true,
-      status_hamil: Boolean(anggotaData.status_hamil),
-      hpht: anggotaData.hpht || null,
-      foto: anggotaData.foto || "",
-    };
-
-    setData((prev) => ({
-      ...prev,
-      anggota: [newAnggota, ...prev.anggota],
-    }));
-
-    addAuditLog("CREATE", "anggota", newAnggota.nik, `Mendaftarkan anggota baru: ${newAnggota.nama}`);
-
-    // F1: catat kehamilan aktif bila anggota ditandai hamil (DDL tabel kehamilan)
-    if (anggotaData.status_hamil && anggotaData.hpht && dbService.isConfigured()) {
-      try {
-        await dbService.createKehamilan(newAnggota.id, anggotaData.hpht);
-      } catch (e) {
-        console.warn("Failed to create kehamilan record:", e);
-      }
+    const serverAnggota = await dbService.createAnggota(anggotaData);
+    if (anggotaData.status_hamil && anggotaData.hpht) {
+      await dbService.createKehamilan(serverAnggota.id, anggotaData.hpht).catch((e) => console.warn(e));
     }
-
-    return newAnggota;
-  }, [addAuditLog]);
+    await refreshFromDb(true);
+    addAuditLog("CREATE", "anggota", serverAnggota.nik, `Mendaftarkan anggota baru ke database: ${serverAnggota.nama}`);
+    return serverAnggota;
+  }, [addAuditLog, refreshFromDb, showToast]);
 
   const updateKeluarga = useCallback(async (id: string, patch: any) => {
-    setData((prev) => ({
-      ...prev,
-      keluarga: prev.keluarga.map((k) => (k.id === id ? { ...k, ...patch } : k)),
-    }));
-
     if (dbService.isConfigured()) {
-      try {
-        await dbService.updateKeluarga(id, patch);
-      } catch (e) {
-        console.warn("Failed to update keluarga in InsForge DB:", e);
-      }
+      await dbService.updateKeluarga(id, patch);
+      await refreshFromDb(true);
     }
-
-    addAuditLog("UPDATE", "keluarga", id, "Memperbarui data keluarga");
-  }, [addAuditLog]);
+    addAuditLog("UPDATE", "keluarga", id, "Memperbarui data keluarga di database");
+  }, [addAuditLog, refreshFromDb]);
 
   const updateAnggota = useCallback(async (id: string, patch: any) => {
-    // Guard gender (PRD 37): laki-laki tidak dapat ditandai hamil
     const target = data.anggota.find((a) => a.id === id);
     if (target && patch.status_hamil && target.jenis_kelamin !== "P") {
       showToast("Anggota berjenis kelamin laki-laki tidak dapat ditandai hamil.", "danger");
       return;
     }
 
-    setData((prev) => ({
-      ...prev,
-      anggota: prev.anggota.map((a) => (a.id === id ? { ...a, ...patch } : a)),
-    }));
-
     if (dbService.isConfigured()) {
-      try {
-        await dbService.updateAnggota(id, patch);
-      } catch (e) {
-        console.warn("Failed to update anggota in InsForge DB:", e);
-      }
+      await dbService.updateAnggota(id, patch);
       if (patch.status_hamil && patch.hpht) {
-        try {
-          await dbService.createKehamilan(id, patch.hpht);
-        } catch (e) {
-          console.warn("Failed to create kehamilan record:", e);
-        }
+        await dbService.createKehamilan(id, patch.hpht).catch((e) => console.warn(e));
       }
-      // (BUG #7) Bila kehamilan dibatalkan (status_hamil=false), finalisasi record kehamilan
-      // aktif di DB agar tidak menjadi orphan dengan status 'aktif'.
       if (patch.status_hamil === false) {
-        try {
-          await dbService.selesaikanKehamilan(id);
-        } catch (e) {
-          console.warn("Failed to finalize kehamilan on cancel:", e);
-        }
+        await dbService.selesaikanKehamilan(id).catch((e) => console.warn(e));
       }
+      await refreshFromDb(true);
     }
 
-    addAuditLog("UPDATE", "anggota", id, "Memperbarui data anggota");
-  }, [data.anggota, addAuditLog, showToast]);
+    addAuditLog("UPDATE", "anggota", id, "Memperbarui data anggota di database");
+  }, [data.anggota, addAuditLog, showToast, refreshFromDb]);
 
   const selesaikanKehamilan = useCallback(async (anggotaId: string) => {
-    // Recalc kategori kembali berbasis usia (PRD F-04: pasca persalinan)
     const target = data.anggota.find((a) => a.id === anggotaId);
     if (!target) return;
 
     const usiaInfo = hitungUsia(target.tanggal_lahir);
     const kategoriBaru = klasifikasiSasaran(usiaInfo, target.jenis_kelamin, false).kode;
 
-    setData((prev) => ({
-      ...prev,
-      anggota: prev.anggota.map((a) =>
-        a.id === anggotaId ? { ...a, status_hamil: false, hpht: null, kategori: kategoriBaru } : a
-      ),
-    }));
-
     if (dbService.isConfigured()) {
-      try {
-        await dbService.selesaikanKehamilan(anggotaId);
-      } catch (e) {
-        console.warn("Failed to finalize kehamilan in InsForge DB:", e);
-      }
+      await dbService.selesaikanKehamilan(anggotaId);
+      await dbService.updateAnggota(anggotaId, { status_hamil: false, hpht: null, kategori: kategoriBaru });
+      await refreshFromDb(true);
     }
 
-    addAuditLog("UPDATE", "kehamilan", anggotaId, `Menyelesaikan kehamilan; kategori dikembalikan ke ${kategoriBaru}`);
-  }, [data.anggota, addAuditLog]);
+    addAuditLog("UPDATE", "kehamilan", anggotaId, `Menyelesaikan kehamilan di database; kategori dikembalikan ke ${kategoriBaru}`);
+  }, [data.anggota, addAuditLog, refreshFromDb]);
 
   const tambahJadwal = useCallback(async (jadwalData: any) => {
-    let serverJadwal: any = null;
-    if (dbService.isConfigured()) {
-      try {
-        serverJadwal = await dbService.createJadwal(jadwalData);
-      } catch (e) {
-        console.warn("Failed to create jadwal in InsForge DB:", e);
-      }
+    if (!dbService.isConfigured()) {
+      showToast("Database InsForge tidak terhubung.", "danger");
+      throw new Error("Database InsForge tidak terhubung");
     }
+    const serverJadwal = await dbService.createJadwal(jadwalData);
+    await refreshFromDb(true);
+    addAuditLog("CREATE", "jadwal", serverJadwal.id, `Membuat jadwal posyandu di database: ${serverJadwal.tema || serverJadwal.tanggal}`);
+    return serverJadwal;
+  }, [addAuditLog, refreshFromDb, showToast]);
 
-    const newJadwal = serverJadwal || {
-      id: `jadwal-${Date.now()}`,
-      tanggal: jadwalData.tanggal,
-      jenis: jadwalData.jenis || "bulanan",
-      tema: jadwalData.tema || "Posyandu Rutin",
-      tempat: jadwalData.tempat || "Balai RW 06 Flamboyan",
-      catatan: jadwalData.catatan || "",
-      // "Mulai Alur 5 Meja" mengirim status "aktif" langsung (pola legacy); form perencanaan default draft
-      status: jadwalData.status || "draft",
-    };
-
-    setData((prev) => ({
-      ...prev,
-      jadwal: [newJadwal, ...prev.jadwal],
-    }));
-
-    addAuditLog("CREATE", "jadwal", newJadwal.id, `Membuat jadwal posyandu: ${newJadwal.tema || newJadwal.tanggal}`);
-    return newJadwal;
-  }, [addAuditLog]);
-
-  const updateJadwalStatus = useCallback(async (jadwalId: string, status: "draft" | "aktif" | "selesai" | "dibatalkan") => {
+  const updateJadwalStatus = useCallback(async (jadwalId: string, status: "draft" | "aktif" | "dibatalkan") => {
+    // CATATAN: status "selesai" TIDAK ditangani di sini — satu-satunya jalur
+    // penutupan resmi adalah tutupSesiHariH (risiko absen, arsip sesi,
+    // sesiArsipId, audit CLOSE, error dilempar). Call site penutupan wajib
+    // memanggil tutupSesiHariH agar perilaku identik di semua halaman.
     // (BUG #6) Saat mengaktifkan 1 jadwal, jadwal aktif LAIN harus ikut di-set "selesai"
     // di DB agar tidak ada >1 sesi aktif (check-in akan memilih sesi salah).
     const otherActiveIds =
@@ -677,19 +758,25 @@ export function SipanduDataProvider({ children }: { children: React.ReactNode })
           (k: any) => k.jadwal_id === jadwalId || k.jadwal_posyandu_id === jadwalId
         );
         if (matchingVisits.length > 0) {
-          newKunjunganAktif = matchingVisits;
+          // C-06: dedup ID + jangan timpa kunjunganAktif milik sesi lain yang masih berjalan.
+          const milikLain = prev.kunjunganAktif.filter(
+            (k: any) =>
+              (k.jadwal_id || k.jadwal_posyandu_id) &&
+              (k.jadwal_id || k.jadwal_posyandu_id) !== jadwalId
+          );
+          const seen = new Set<string>(milikLain.map((k: any) => k.id));
+          const merged = [...milikLain];
+          for (const k of matchingVisits) {
+            if (k?.id && !seen.has(k.id)) {
+              seen.add(k.id);
+              merged.push(k);
+            }
+          }
+          newKunjunganAktif = merged;
           newHistory = prev.kunjungan.filter(
             (k: any) => k.jadwal_id !== jadwalId && k.jadwal_posyandu_id !== jadwalId
           );
         }
-      } else if (status === "selesai") {
-        const completedVisits = prev.kunjunganAktif.map((k: any) => ({
-          ...k,
-          jadwal_id: k.jadwal_id || jadwalId,
-          status_alur: "selesai",
-        }));
-        newKunjunganAktif = [];
-        newHistory = [...completedVisits, ...prev.kunjungan];
       }
 
       return {
@@ -728,92 +815,226 @@ export function SipanduDataProvider({ children }: { children: React.ReactNode })
     }
   }
 
+  // M5-001/M5-002/M5-004/M5-006/M5-016: tulis HANYA via DB pada tepat satu sesi
+  // aktif (tanpa fallback jadwal[0]/UUID). Klaim sukses hanya pasca-persist;
+  // audit menunggu persist. Error dilempar (tanpa telan) agar UI bertahan.
   const tambahPenyuluhan = useCallback(async (penyuluhanData: any) => {
-    let jadwalId = penyuluhanData.jadwal_id || penyuluhanData.jadwal_posyandu_id || penyuluhanData.sesi_id;
-    if (!jadwalId) {
-      const activeJadwal = data.jadwal.find((j: any) => j.status === "aktif") || data.jadwal[0];
-      jadwalId = activeJadwal?.id || "3b8467a2-62de-4307-aa62-fc3e7e685e10";
+    const aktif = (data.jadwal || []).filter((j: any) => j?.status === "aktif");
+    const sessionId = aktif.length === 1 ? aktif[0].id : null;
+    if (!sessionId) {
+      const msg = aktif.length > 1
+        ? "Terdeteksi lebih dari satu sesi aktif. Rapikan sesi dulu."
+        : "Tidak ada sesi aktif. Buka sesi hari H dulu.";
+      showToast(msg, "warning");
+      throw new Error(msg);
+    }
+    if (!dbService.isConfigured()) {
+      const msg = "Database InsForge tidak terhubung.";
+      showToast(msg, "danger");
+      throw new Error(msg);
     }
 
-    const jumlahPeserta = Number(penyuluhanData.jumlah_peserta ?? penyuluhanData.jumlah ?? 1);
-
-    const newPeny = {
-      id: penyuluhanData.id || `peny-${Date.now()}`,
-      jadwal_id: jadwalId,
-      jadwal_posyandu_id: jadwalId,
-      tema: penyuluhanData.tema,
-      narasumber: penyuluhanData.narasumber || "Kader Posyandu Flamboyan",
-      jumlah_peserta: jumlahPeserta,
-      jumlah: jumlahPeserta,
-      metode: penyuluhanData.metode || "Ceramah & Demonstrasi",
-      media: penyuluhanData.media || "",
-      ringkasan: penyuluhanData.ringkasan || "",
-      waktu: penyuluhanData.waktu || new Date().toISOString(),
-      created_at: new Date().toISOString(),
-    };
-
-    // Update local state immediately for fast UI feedback
-    setData((prev) => ({
-      ...prev,
-      penyuluhan: [newPeny, ...(prev.penyuluhan || []).filter((p: any) => p.id !== newPeny.id)],
-    }));
-
-    addAuditLog("CREATE", "penyuluhan", newPeny.id, `Mendokumentasikan penyuluhan: ${newPeny.tema}`);
-
-    // Persist to Cloud Database via dbService
     try {
-      await dbService.catatPenyuluhan(newPeny);
-    } catch (e) {
-      console.warn("Non-critical: Gagal menyimpan penyuluhan ke dbService:", e);
+      setIsLoadingDb(true);
+      const { row, action } = await dbService.catatPenyuluhan(penyuluhanData, {
+        actorRole: currentUser?.peran,
+        sessionId,
+      });
+      setData((prev) => ({
+        ...prev,
+        penyuluhan: [row, ...(prev.penyuluhan || []).filter((p: any) => p.id !== row.id)],
+      }));
+      await addAuditLog(
+        "CREATE",
+        "penyuluhan",
+        row.id,
+        `Mendokumentasikan penyuluhan: ${row.tema} [sesi ${sessionId}]`
+      );
+      return { row, action };
+    } catch (e: any) {
+      console.error("Gagal menyimpan penyuluhan ke database:", e);
+      showToast(`Gagal menyimpan penyuluhan: ${e.message || "Error"}`, "danger");
+      throw e;
+    } finally {
+      setIsLoadingDb(false);
     }
-  }, [data.jadwal, addAuditLog]);
+  }, [data.jadwal, addAuditLog, showToast, currentUser]);
+
+  // M5-011: ubah penyuluhan tersimpan (persist dulu, lalu state + audit).
+  const ubahPenyuluhan = useCallback(async (id: string, patch: any) => {
+    if (!dbService.isConfigured()) {
+      const msg = "Database InsForge tidak terhubung.";
+      showToast(msg, "danger");
+      throw new Error(msg);
+    }
+    try {
+      setIsLoadingDb(true);
+      const row = await dbService.updatePenyuluhan(id, patch, { actorRole: currentUser?.peran });
+      setData((prev) => ({
+        ...prev,
+        penyuluhan: (prev.penyuluhan || []).map((p: any) => (p.id === id ? row : p)),
+      }));
+      await addAuditLog("UPDATE", "penyuluhan", id, `Memperbarui penyuluhan: ${row.tema}`);
+      return row;
+    } catch (e: any) {
+      console.error("Gagal memperbarui penyuluhan:", e);
+      showToast(`Gagal memperbarui: ${e.message || "Error"}`, "danger");
+      throw e;
+    } finally {
+      setIsLoadingDb(false);
+    }
+  }, [addAuditLog, showToast, currentUser]);
+
+  // M5-011: hapus penyuluhan tersimpan (persist dulu, lalu state + audit).
+  const hapusPenyuluhan = useCallback(async (id: string) => {
+    if (!dbService.isConfigured()) {
+      const msg = "Database InsForge tidak terhubung.";
+      showToast(msg, "danger");
+      throw new Error(msg);
+    }
+    try {
+      setIsLoadingDb(true);
+      await dbService.hapusPenyuluhan(id, { actorRole: currentUser?.peran });
+      setData((prev) => ({
+        ...prev,
+        penyuluhan: (prev.penyuluhan || []).filter((p: any) => p.id !== id),
+      }));
+      await addAuditLog("DELETE", "penyuluhan", id, "Menghapus dokumentasi penyuluhan.");
+    } catch (e: any) {
+      console.error("Gagal menghapus penyuluhan:", e);
+      showToast(`Gagal menghapus: ${e.message || "Error"}`, "danger");
+      throw e;
+    } finally {
+      setIsLoadingDb(false);
+    }
+  }, [addAuditLog, showToast, currentUser]);
+
+  // RK-017: optimistis + rollback saat persist gagal + error dilempar (tanpa telan).
+  // RK-015: rencana kunjungan rumah persist DB (jadwal ulang idempoten).
+  const jadwalkanKunjunganRumah = useCallback(async (anggotaId: string, alasan?: string | null) => {
+    if (!dbService.isConfigured()) {
+      const msg = "Database InsForge tidak terhubung.";
+      showToast(msg, "danger");
+      throw new Error(msg);
+    }
+    const aktif = (data.jadwal || []).filter((j: any) => j?.status === "aktif");
+    const sessionId = aktif.length === 1 ? aktif[0].id : null;
+    try {
+      setIsLoadingDb(true);
+      const { row, action } = await dbService.jadwalkanKunjunganRumah(anggotaId, sessionId, alasan ?? null);
+      setData((prev) => ({
+        ...prev,
+        rencanaKunjungan: [row, ...(prev.rencanaKunjungan || []).filter((r: any) => r.id !== row.id)],
+      }));
+      await addAuditLog(
+        "CREATE",
+        "rencana_kunjungan_rumah",
+        row.id,
+        action === "existed"
+          ? `Rencana kunjungan rumah sudah ada untuk anggota ${anggotaId}; tidak diduplikasi.`
+          : `Menjadwalkan kunjungan rumah untuk anggota ${anggotaId}.`
+      );
+      return { row, action };
+    } catch (e: any) {
+      console.error("Gagal menjadwalkan kunjungan rumah:", e);
+      showToast(`Gagal menjadwalkan: ${e.message || "Error"}`, "danger");
+      throw e;
+    } finally {
+      setIsLoadingDb(false);
+    }
+  }, [addAuditLog, showToast, data.jadwal]);
+
+  const updateStatusRencana = useCallback(async (id: string, status: "terjadwal" | "selesai" | "dibatalkan") => {
+    if (!dbService.isConfigured()) {
+      const msg = "Database InsForge tidak terhubung.";
+      showToast(msg, "danger");
+      throw new Error(msg);
+    }
+    try {
+      setIsLoadingDb(true);
+      const row = await dbService.updateStatusRencana(id, status);
+      setData((prev) => ({
+        ...prev,
+        rencanaKunjungan: (prev.rencanaKunjungan || []).map((r: any) => (r.id === id ? row : r)),
+      }));
+      await addAuditLog("UPDATE", "rencana_kunjungan_rumah", id, `Status rencana kunjungan rumah: ${status}.`);
+      return row;
+    } catch (e: any) {
+      console.error("Gagal memperbarui rencana kunjungan rumah:", e);
+      showToast(`Gagal memperbarui: ${e.message || "Error"}`, "danger");
+      throw e;
+    } finally {
+      setIsLoadingDb(false);
+    }
+  }, [addAuditLog, showToast]);
 
   const verifikasiKunjungan = useCallback(
     async (kunjunganId: string, status: "valid" | "draft" | "diperiksa" = "valid", catatan?: string) => {
-      setData((prev) => {
-        const updated = prev.kunjunganAktif.map((k) => {
-          if (k.id === kunjunganId) {
-            const next: any = {
-              ...k,
-              status_verifikasi: status,
-              waktu_verifikasi: new Date().toISOString(),
-            };
-            if (status === "draft" && catatan) next.catatan_kembalikan = catatan;
-            return next;
+      const allVisits = [...(data.kunjunganAktif || []), ...(data.kunjungan || [])];
+      const prev = allVisits.find((k) => k.id === kunjunganId);
+      const snapshot = prev
+        ? {
+            status_verifikasi: prev.status_verifikasi,
+            waktu_verifikasi: prev.waktu_verifikasi,
+            catatan_kembalikan: prev.catatan_kembalikan,
           }
-          return k;
-        });
-        return { ...prev, kunjunganAktif: updated };
-      });
+        : null;
+
+      const applyStatus = (k: any) => {
+        if (k.id === kunjunganId) {
+          const next: any = {
+            ...k,
+            status_verifikasi: status,
+            waktu_verifikasi: new Date().toISOString(),
+          };
+          if (status === "draft" && catatan) next.catatan_kembalikan = catatan;
+          return next;
+        }
+        return k;
+      };
+
+      setData((prevState) => ({
+        ...prevState,
+        kunjunganAktif: prevState.kunjunganAktif.map(applyStatus),
+        kunjungan: prevState.kunjungan.map(applyStatus),
+      }));
 
       if (dbService.isConfigured()) {
         try {
           await dbService.verifyKunjungan(kunjunganId, status);
-        } catch (e) {
-          console.warn("Failed to persist verification to InsForge DB:", e);
+        } catch (e: any) {
+          // Rollback state lokal agar tidak berbeda dari DB.
+          const rollbackItem = (k: any) => (k.id === kunjunganId && snapshot ? { ...k, ...snapshot } : k);
+          setData((prevState) => ({
+            ...prevState,
+            kunjunganAktif: prevState.kunjunganAktif.map(rollbackItem),
+            kunjungan: prevState.kunjungan.map(rollbackItem),
+          }));
+          const msg = `Gagal menyimpan verifikasi: ${e?.message || "Error database"}`;
+          showToast(msg, "danger");
+          throw new Error(msg);
         }
       }
 
-      addAuditLog(
+      await addAuditLog(
         "UPDATE",
         "verifikasi_bidan",
         kunjunganId,
         catatan ? `Validasi status kunjungan: ${status} — Catatan: ${catatan}` : `Validasi status kunjungan: ${status}`
       );
     },
-    [addAuditLog]
+    [addAuditLog, data.kunjunganAktif, data.kunjungan, showToast]
   );
 
   // (BUG #16) Bidan/Super Admin dapat membuka kunci kunjungan yang sudah tervalidasi
   // dengan mengembalikan status_verifikasi ke "draft" agar bisa diedit kembali.
   const bukaKunciKunjungan = useCallback(async (kunjunganId: string) => {
-    setData((prev) => {
-      const updated = prev.kunjunganAktif.map((k) => {
-        if (k.id === kunjunganId) return { ...k, status_verifikasi: "draft", waktu_verifikasi: undefined };
-        return k;
-      });
-      return { ...prev, kunjunganAktif: updated };
-    });
+    const unlock = (k: any) => (k.id === kunjunganId ? { ...k, status_verifikasi: "draft" as const, waktu_verifikasi: undefined } : k);
+    setData((prev) => ({
+      ...prev,
+      kunjunganAktif: prev.kunjunganAktif.map(unlock),
+      kunjungan: prev.kunjungan.map(unlock),
+    }));
 
     if (dbService.isConfigured()) {
       try {
@@ -881,51 +1102,89 @@ export function SipanduDataProvider({ children }: { children: React.ReactNode })
 
   const verifikasiBulkKunjungan = useCallback(async (kunjunganIds: string[], status: "valid" | "draft" | "diperiksa" = "valid") => {
     const idSet = new Set(kunjunganIds);
+    const allVisits = [...(data.kunjunganAktif || []), ...(data.kunjungan || [])];
+    const snapshots = new Map<string, any>();
+    for (const k of allVisits) {
+      if (idSet.has(k.id) && !snapshots.has(k.id)) {
+        snapshots.set(k.id, {
+          status_verifikasi: k.status_verifikasi,
+          waktu_verifikasi: k.waktu_verifikasi,
+        });
+      }
+    }
 
-    setData((prev) => {
-      const updated = prev.kunjunganAktif.map((k) => {
-        if (idSet.has(k.id)) {
-          return {
-            ...k,
-            status_verifikasi: status,
-            waktu_verifikasi: new Date().toISOString(),
-          };
-        }
-        return k;
-      });
-      return { ...prev, kunjunganAktif: updated };
-    });
+    const applyBulk = (k: any) => {
+      if (idSet.has(k.id)) {
+        return {
+          ...k,
+          status_verifikasi: status,
+          waktu_verifikasi: new Date().toISOString(),
+        };
+      }
+      return k;
+    };
+
+    setData((prev) => ({
+      ...prev,
+      kunjunganAktif: prev.kunjunganAktif.map(applyBulk),
+      kunjungan: prev.kunjungan.map(applyBulk),
+    }));
 
     if (dbService.isConfigured()) {
+      const gagal: string[] = [];
       for (const id of kunjunganIds) {
         try {
           await dbService.verifyKunjungan(id, status);
         } catch (e) {
-          console.warn(`Failed to persist verification for ${id}:`, e);
+          gagal.push(id);
         }
+      }
+      if (gagal.length > 0) {
+        // RK-017: rollback yang gagal agar lokal selaras DB.
+        const gagalSet = new Set(gagal);
+        const rollbackBulk = (k: any) => {
+          const snap = snapshots.get(k.id);
+          return gagalSet.has(k.id) && snap ? { ...k, ...snap } : k;
+        };
+        setData((prev) => ({
+          ...prev,
+          kunjunganAktif: prev.kunjunganAktif.map(rollbackBulk),
+          kunjungan: prev.kunjungan.map(rollbackBulk),
+        }));
+        const msg = `Verifikasi massal gagal untuk ${gagal.length} kunjungan; perubahannya dibatalkan.`;
+        showToast(msg, "danger");
+        throw new Error(msg);
       }
     }
 
-    addAuditLog("UPDATE", "verifikasi_bidan", kunjunganIds.join(","), `Verifikasi massal ${kunjunganIds.length} kunjungan menjadi: ${status}`);
-  }, [addAuditLog]);
+    await addAuditLog("UPDATE", "verifikasi_bidan", kunjunganIds.join(","), `Verifikasi massal ${kunjunganIds.length} kunjungan menjadi: ${status}`);
+  }, [addAuditLog, data.kunjunganAktif, data.kunjungan, showToast]);
 
+  // RK-002/RK-004/RK-018/RK-019/RK-035: tutup sesi HANYA untuk jadwalId terkait,
+  // DB dulu (gagal = tidak ada perubahan lokal + error dilempar), audit jujur.
   const tutupSesiHariH = useCallback(async (jadwalId: string) => {
-    // G1: hitung risiko level-sesi (R-B07/B08, R-H04) untuk sasaran yang absen
+    if (!jadwalId) throw new Error("jadwalId wajib diisi untuk menutup sesi.");
+    const milikSesi = (k: any) => (k.jadwal_posyandu_id || k.jadwal_id) === jadwalId;
+
+    // G1: risiko level-sesi (R-B07/B08, R-H04) untuk sasaran yang absen.
     const sesiTerbaru = new Date().toISOString();
-    const hadirByAnggota = new Map<string, string[]>();
-    [...data.kunjungan].forEach((k: any) => {
-      const list = hadirByAnggota.get(k.anggota_id) || [];
-      list.push(k.waktu_hadir);
-      hadirByAnggota.set(k.anggota_id, list);
+    // RK-019: "hadir sesi ini" HANYA dari visit milik jadwalId.
+    const presentSessionIds = new Set<string>();
+    [...data.kunjunganAktif, ...data.kunjungan].forEach((k: any) => {
+      if (milikSesi(k) && k?.anggota_id) presentSessionIds.add(k.anggota_id);
     });
-    data.kunjunganAktif.forEach((k: any) => {
+    // RK-020 (koreksi audit): timestamp riwayat hadir TETAP lintas sesi —
+    // tanpa histori, absen 1 vs 2 bulan (R-B07/B08) tidak dapat dibedakan.
+    const hadirByAnggota = new Map<string, string[]>();
+    [...data.kunjungan, ...data.kunjunganAktif].forEach((k: any) => {
+      if (!k?.anggota_id || !k?.waktu_hadir) return;
       const list = hadirByAnggota.get(k.anggota_id) || [];
       list.push(k.waktu_hadir);
       hadirByAnggota.set(k.anggota_id, list);
     });
 
     const risikoSesi = data.anggota
-      .filter((a: any) => a.status_aktif && a.kategori !== "umum" && !data.kunjunganAktif.some((k: any) => k.anggota_id === a.id))
+      .filter((a: any) => a.status_aktif && a.kategori !== "umum" && !presentSessionIds.has(a.id))
       .map((a: any) => {
         const riwayat = (hadirByAnggota.get(a.id) || []).sort();
         const terakhir = riwayat[riwayat.length - 1] || null;
@@ -946,35 +1205,60 @@ export function SipanduDataProvider({ children }: { children: React.ReactNode })
       }))
     );
 
+    // RK-004/RK-018: DB dulu. Gagal = state lokal utuh + audit CLOSE_FAILED + throw.
+    if (dbService.isConfigured()) {
+      try {
+        await dbService.closeSession(jadwalId);
+      } catch (e: any) {
+        const msg = `Gagal menutup sesi di database: ${e?.message || "Error"}. Tidak ada data yang diubah.`;
+        showToast(msg, "danger");
+        await addAuditLog("CLOSE_FAILED", "sesi_posyandu", jadwalId, msg);
+        throw new Error(msg);
+      }
+    }
+
+    // RK-002/RK-035: arsipkan HANYA visit sesi ini; dedup ID; sesi lain utuh.
+    // Arsip dihitung dari prev (BUKAN closure) agar kebal race dengan polling
+    // refresh 45 detik: visit yang masuk di antara klik dan setData tetap ikut.
+    let closedCount = 0;
     setData((prev) => {
       const updatedJadwal = prev.jadwal.map((j) => (j.id === jadwalId ? { ...j, status: "selesai" } : j));
-      const newHistory = [...prev.kunjunganAktif, ...prev.kunjungan];
+      const toArchive = prev.kunjunganAktif
+        .filter(milikSesi)
+        .map((k: any) => ({ ...k, status_alur: "selesai" as const }));
+      closedCount = toArchive.length;
+      const remainingAktif = prev.kunjunganAktif.filter((k: any) => !milikSesi(k));
+      const seen = new Set<string>();
+      const newHistory = [...toArchive, ...prev.kunjungan].filter((k: any) => {
+        if (!k?.id || seen.has(k.id)) return false;
+        seen.add(k.id);
+        return true;
+      });
       return {
         ...prev,
         jadwal: updatedJadwal,
         kunjungan: newHistory,
-        kunjunganAktif: [],
+        kunjunganAktif: remainingAktif,
+        sesiArsipId: jadwalId,
         notifikasi: [...(notifSesi as any[]), ...(prev.notifikasi || [])],
       };
     });
+    saveSesiArsipId(jadwalId);
 
-    if (dbService.isConfigured()) {
-      try {
-        await dbService.closeSession(jadwalId);
-      } catch (e) {
-        console.warn("Failed to close session in InsForge DB:", e);
-      }
-    }
+    // Settle dari kebenaran DB pasca-tutup: menutup sisa race polling/tab lain
+    // sehingga arsip lokal, DB, dan cetakan berikutnya identik.
+    await refreshFromDb(true);
 
-    addAuditLog(
+    await addAuditLog(
       "CLOSE",
       "sesi_posyandu",
       jadwalId,
       notifSesi.length > 0
-        ? `Sesi ditutup. ${notifSesi.length} sasaran terdeteksi absen/risiko (R-B07/B08, R-H04).`
-        : "Sesi Posyandu Hari H resmi ditutup tanpa kasus absen prioritas."
+        ? `Sesi ditutup (${closedCount} kunjungan diarsipkan). ${notifSesi.length} sasaran terdeteksi absen/risiko (R-B07/B08, R-H04).`
+        : `Sesi Posyandu Hari H resmi ditutup (${closedCount} kunjungan diarsipkan) tanpa kasus absen prioritas.`
     );
-  }, [data.anggota, data.kunjungan, data.kunjunganAktif, addAuditLog]);
+    return { closedCount, notifCount: notifSesi.length };
+  }, [data.anggota, data.kunjungan, data.kunjunganAktif, addAuditLog, showToast, refreshFromDb]);
 
   const tandaiSemuaNotifikasiDibaca = useCallback(() => {
     setData((prev) => ({
@@ -1025,7 +1309,6 @@ export function SipanduDataProvider({ children }: { children: React.ReactNode })
   }, [addAuditLog]);
 
   const resetToDefaultSeed = useCallback(async () => {
-    localStorage.removeItem(STORAGE_KEY);
     await refreshFromDb();
     addAuditLog("RESET", "database", "all", "Super Admin menyinkronkan ulang seluruh data master dari InsForge Cloud.");
   }, [addAuditLog, refreshFromDb]);
@@ -1035,15 +1318,9 @@ export function SipanduDataProvider({ children }: { children: React.ReactNode })
     if (dbService.isConfigured()) {
       await dbService.purgeTransactionalData();
     }
-    localStorage.removeItem(STORAGE_KEY);
-    setData((prev) => ({
-      ...prev,
-      kunjungan: [],
-      kunjunganAktif: [],
-      auditLogs: [],
-    }));
+    await refreshFromDb(true);
     addAuditLog("PURGE", "database", "all", "Super Admin membersihkan seluruh data kunjungan dan transaksi.");
-  }, [addAuditLog]);
+  }, [addAuditLog, refreshFromDb]);
 
   // Update foto profil pengguna terpusat oleh Admin
   const updateUserPhoto = useCallback(async (id: string, foto: string) => {
@@ -1064,21 +1341,147 @@ export function SipanduDataProvider({ children }: { children: React.ReactNode })
     addAuditLog("UPDATE", "users", id, `Foto profil pengguna diperbarui oleh Admin.`);
   }, [addAuditLog]);
 
+  // Sinkronkan seluruh data input lokal ke database InsForge Cloud PostgreSQL
+  const sinkronkanDataKeCloud = useCallback(async (): Promise<{ success: boolean; syncedCount: number; message: string }> => {
+    if (!dbService.isConfigured()) {
+      showToast("Backend InsForge belum terkonfigurasi.", "warning");
+      return { success: false, syncedCount: 0, message: "InsForge belum terkonfigurasi" };
+    }
+
+    setIsLoadingDb(true);
+    let syncedCount = 0;
+    // D-2: ringkasan per-item agar kegagalan terlihat user, bukan hilang di console.
+    const failures: Array<{ nama: string; alasan: string }> = [];
+
+    try {
+      const dbAnggota = await dbService.getAnggota().catch(() => []);
+      const agtByNik = new Map<string, any>();
+      (dbAnggota || []).forEach((a: any) => agtByNik.set(a.nik, a));
+
+      // F-01: TANPA fallback jadwal[0]. Visit tanpa sesi valid ditolak eksplisit (dicatat gagal),
+      // bukan ditebak ke jadwal pertama (risiko tulis ke sesi salah).
+      const allVisits = [...(data.kunjunganAktif || []), ...(data.kunjungan || [])];
+      const anggotaById = new Map<string, any>((data.anggota || []).map((a: any) => [a.id, a]));
+
+      for (const v of allVisits) {
+        const namaVisit = anggotaById.get(v.anggota_id)?.nama || v.anggota_id || v.id;
+        let realAgt = (dbAnggota || []).find((a: any) => a.id === v.anggota_id);
+        if (!realAgt) {
+          const localAgt = anggotaById.get(v.anggota_id);
+          if (localAgt?.nik) {
+            realAgt = agtByNik.get(localAgt.nik);
+          }
+        }
+
+        if (!realAgt) {
+          failures.push({ nama: namaVisit, alasan: "anggota tidak ditemukan di database" });
+          continue;
+        }
+
+        const jadwalId = v.jadwal_posyandu_id || v.jadwal_id;
+        if (!jadwalId) {
+          failures.push({ nama: namaVisit, alasan: "tanpa sesi (jadwal_posyandu_id kosong) — tidak disinkronkan" });
+          continue;
+        }
+
+        let dbVisitId = v.id;
+        try {
+          const res = await dbService.checkIn(realAgt.id, jadwalId);
+          if (res?.visit?.id) {
+            dbVisitId = res.visit.id;
+          }
+        } catch (e) {
+          console.warn("CheckIn DB sync:", e);
+        }
+
+        let didSync = false;
+
+        if (v.pengukuran && Object.keys(v.pengukuran).length > 0) {
+          try {
+            await dbService.savePengukuran(dbVisitId, v.pengukuran);
+            didSync = true;
+          } catch (e) {
+            console.warn("SavePengukuran DB sync error:", e);
+          }
+        }
+
+        if (v.catatan && Object.keys(v.catatan).length > 0) {
+          try {
+            await dbService.savePencatatan(dbVisitId, v.catatan);
+            didSync = true;
+          } catch (e) {
+            console.warn("SavePencatatan DB sync error:", e);
+          }
+        }
+
+        if (v.pelayanan && Object.keys(v.pelayanan).length > 0) {
+          try {
+            await dbService.savePelayanan(dbVisitId, v.pelayanan);
+            didSync = true;
+          } catch (e) {
+            console.warn("SavePelayanan DB sync error:", e);
+          }
+        }
+
+        if (Array.isArray(v.risiko) && v.risiko.length > 0) {
+          try {
+            const rows = v.risiko.map((r: any) => ({
+              kunjungan_id: dbVisitId,
+              anggota_id: realAgt.id,
+              kode_risiko: r.kode_risiko || r.kode || "R-GEN",
+              deskripsi: r.deskripsi || r.judul || "Risiko",
+              severity: r.severity || "warning",
+              tindak_lanjut: r.tindak_lanjut || r.tindakLanjut || "Konseling & Pantau Rutin",
+            }));
+            await dbService.catatRisiko(rows);
+            didSync = true;
+          } catch (e) {
+            console.warn("CatatRisiko DB sync error:", e);
+          }
+        }
+
+        if (didSync) {
+          syncedCount++;
+        }
+      }
+
+      await refreshFromDb(true);
+      // D-2: ringkasan per-item — tampilkan yang gagal agar tidak hilang diam-diam.
+      const msg = failures.length > 0
+        ? `Sinkronisasi: ${syncedCount} berhasil, ${failures.length} gagal (${failures.slice(0, 3).map((f) => `${f.nama}: ${f.alasan}`).join("; ")}${failures.length > 3 ? "; ..." : ""}).`
+        : `Sinkronisasi berhasil! ${syncedCount} data pemeriksaan tersimpan ke database cloud.`;
+      showToast(msg, failures.length > 0 ? "warning" : "success");
+      return { success: failures.length === 0, syncedCount, message: msg };
+    } catch (err: any) {
+      console.error("Gagal sinkronisasi data ke cloud:", err);
+      const msg = "Terjadi kendala saat sinkronisasi data ke database.";
+      showToast(msg, "danger");
+      return { success: false, syncedCount, message: msg };
+    } finally {
+      setIsLoadingDb(false);
+    }
+  }, [data, refreshFromDb, showToast]);
+
   return (
     <SipanduContext.Provider
       value={{
         data,
         isLoadingDb,
+        activeSessionId,
         refreshFromDb,
+        sinkronkanDataKeCloud,
         checkInPeserta,
         updatePengukuran,
         updatePencatatan,
         updatePelayanan,
+        reopenKunjungan,
         tambahKeluarga,
         tambahAnggota,
         tambahJadwal,
         updateJadwalStatus,
         tambahPenyuluhan,
+        ubahPenyuluhan,
+        hapusPenyuluhan,
         updateKeluarga,
         updateAnggota,
         selesaikanKehamilan,
@@ -1087,6 +1490,8 @@ export function SipanduDataProvider({ children }: { children: React.ReactNode })
         verifikasiBulkKunjungan,
         updateStatusRisiko,
         tutupSesiHariH,
+        jadwalkanKunjunganRumah,
+        updateStatusRencana,
         linkPendudukSinduksadati,
         updateUserPhoto,
         tandaiSemuaNotifikasiDibaca,

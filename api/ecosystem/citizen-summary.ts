@@ -106,40 +106,60 @@ export default async function handler(req: any, res: any) {
       .select("id, waktu_hadir, status_verifikasi")
       .eq("anggota_id", a.id)
       .order("waktu_hadir", { ascending: false })
-      .limit(5);
+      .limit(12);
 
     if (kunjunganList && kunjunganList.length > 0) {
       const latestVisitId = kunjunganList[0].id;
       record.tgl_pemeriksaan_terakhir = kunjunganList[0].waktu_hadir || "";
+      record.total_kunjungan = kunjunganList.length;
 
+      const kunjunganIds = kunjunganList.map((k: any) => k.id);
       const { data: pengukuranList } = await db.database
         .from("pengukuran")
         .select("*")
-        .eq("kunjungan_id", latestVisitId)
-        .limit(1);
+        .in("kunjungan_id", kunjunganIds);
+
+      record.riwayat_pengukuran = [];
 
       if (pengukuranList && pengukuranList.length > 0) {
-        const p = pengukuranList[0];
-        record.berat_badan_kg = p.berat_badan ?? undefined;
-        record.tinggi_badan_cm = p.tinggi_badan ?? p.panjang_badan ?? undefined;
-        record.lingkar_kepala_cm = p.lingkar_kepala ?? undefined;
-        record.z_score_bb_u = p.z_score_bbu ?? undefined;
-        record.z_score_tb_u = p.z_score_tbu ?? undefined;
-        record.tensi_darah = (p.tekanan_darah_sistol != null || p.tekanan_darah_diastol != null)
-          ? `${p.tekanan_darah_sistol ?? "-"}/${p.tekanan_darah_diastol ?? "-"}`
-          : undefined;
-        record.gula_darah_puasa = p.gula_darah != null ? String(p.gula_darah) : undefined;
-
-        if (p.z_score_bbu != null) {
-          const z = p.z_score_bbu;
-          record.status_gizi = z < -3 ? "Gizi Buruk" : z < -2 ? "Gizi Kurang" : z > 2 ? "Gizi Lebih" : "Normal";
-        } else if (p.status_gizi) {
-          record.status_gizi = p.status_gizi;
+        // Build history
+        for (const k of kunjunganList) {
+          const p = pengukuranList.find((meas: any) => meas.kunjungan_id === k.id);
+          if (p) {
+            record.riwayat_pengukuran.push({
+              tanggal: k.waktu_hadir,
+              berat_badan: p.berat_badan ?? undefined,
+              tinggi_badan: p.tinggi_badan ?? p.panjang_badan ?? undefined,
+              z_score_bbu: p.z_score_bbu ?? undefined,
+              z_score_tbu: p.z_score_tbu ?? undefined,
+            });
+          }
         }
 
-        if (p.z_score_tbu != null) {
-          const z = p.z_score_tbu;
-          record.status_stunting = z < -3 ? "Stunting Berat" : z < -2 ? "Stunting" : "Normal";
+        // Set latest metrics based on the latest visit (which is index 0)
+        const pLatest = pengukuranList.find((meas: any) => meas.kunjungan_id === latestVisitId);
+        if (pLatest) {
+          record.berat_badan_kg = pLatest.berat_badan ?? undefined;
+          record.tinggi_badan_cm = pLatest.tinggi_badan ?? pLatest.panjang_badan ?? undefined;
+          record.lingkar_kepala_cm = pLatest.lingkar_kepala ?? undefined;
+          record.z_score_bb_u = pLatest.z_score_bbu ?? undefined;
+          record.z_score_tb_u = pLatest.z_score_tbu ?? undefined;
+          record.tensi_darah = (pLatest.tekanan_darah_sistol != null || pLatest.tekanan_darah_diastol != null)
+            ? `${pLatest.tekanan_darah_sistol ?? "-"}/${pLatest.tekanan_darah_diastol ?? "-"}`
+            : undefined;
+          record.gula_darah_puasa = pLatest.gula_darah != null ? String(pLatest.gula_darah) : undefined;
+
+          if (pLatest.z_score_bbu != null) {
+            const z = pLatest.z_score_bbu;
+            record.status_gizi = z < -3 ? "Gizi Buruk" : z < -2 ? "Gizi Kurang" : z > 2 ? "Gizi Lebih" : "Normal";
+          } else if (pLatest.status_gizi) {
+            record.status_gizi = pLatest.status_gizi;
+          }
+
+          if (pLatest.z_score_tbu != null) {
+            const z = pLatest.z_score_tbu;
+            record.status_stunting = z < -3 ? "Stunting Berat" : z < -2 ? "Stunting" : "Normal";
+          }
         }
       }
 
@@ -152,8 +172,6 @@ export default async function handler(req: any, res: any) {
       if (catatanList && catatanList.length > 0) {
         record.catatan_kader = catatanList[0].catatan_bidan || catatanList[0].catatan_kader || undefined;
       }
-
-      record.total_kunjungan = kunjunganList.length;
     }
 
     // Imunisasi

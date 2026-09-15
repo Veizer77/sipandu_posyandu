@@ -1,7 +1,18 @@
 import React, { useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { Printer } from "lucide-react";
 import { useSipandu } from "@/lib/data-store";
 import { SIPANDU_SEED } from "@/lib/seedData";
+import { normalizeImunisasiList } from "@/lib/meja2Logic";
+import {
+  resolveSumberLaporan,
+  labelSumberLaporan,
+  ringkasSesiPeriode,
+  type SumberLaporan,
+} from "@/lib/rekapLogic";
+import { LaporanL01Print } from "@/components/print/LaporanL01Print";
+import { LaporanL08Print } from "@/components/print/LaporanL08Print";
+import { printDocument, printTargetElementId } from "@/lib/print";
 
 const NAMA_BULAN = [
   "Januari", "Februari", "Maret", "April", "Mei", "Juni",
@@ -13,44 +24,170 @@ function parsePeriode(periode: string): { tahun: number; bulanIdx: number } {
   return { tahun: Number(tahunStr) || new Date().getFullYear(), bulanIdx: NAMA_BULAN.indexOf(nama) };
 }
 
-function inPeriode(waktu: string | undefined, tahun: number, bulanIdx: number): boolean {
-  if (!waktu) return false;
-  const d = new Date(waktu);
-  if (isNaN(d.getTime())) return false;
-  return d.getFullYear() === tahun && d.getMonth() === bulanIdx;
+/** Periksa apakah kunjungan termasuk dalam periode tertentu via tanggal sesi atau waktu hadir */
+function visitMatchesPeriode(
+  v: any,
+  tahun: number,
+  bulanIdx: number,
+  jadwalMap: Map<string, any>
+): boolean {
+  // 1. Cek dari tanggal jadwal sesi terkait (paling akurat untuk pengelompokan sesi)
+  const j = jadwalMap.get(v.jadwal_posyandu_id || v.jadwal_id);
+  if (j?.tanggal) {
+    const dj = new Date(`${j.tanggal}T00:00:00`);
+    if (!isNaN(dj.getTime()) && dj.getFullYear() === tahun && dj.getMonth() === bulanIdx) {
+      return true;
+    }
+  }
+  // 2. Cek dari waktu hadir
+  if (v.waktu_hadir) {
+    const dw = new Date(v.waktu_hadir);
+    if (!isNaN(dw.getTime()) && dw.getFullYear() === tahun && dw.getMonth() === bulanIdx) {
+      return true;
+    }
+  }
+  // 3. Cek dari created_at
+  if (v.created_at) {
+    const dc = new Date(v.created_at);
+    if (!isNaN(dc.getTime()) && dc.getFullYear() === tahun && dc.getMonth() === bulanIdx) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Bangun daftar opsi periode dari jadwal & data yang tersedia */
+function buildAvailablePeriodes(jadwal: any[], visits: any[]): string[] {
+  const set = new Set<string>();
+
+  (jadwal || []).forEach((j: any) => {
+    if (j?.tanggal) {
+      const d = new Date(`${j.tanggal}T00:00:00`);
+      if (!isNaN(d.getTime())) {
+        set.add(`${NAMA_BULAN[d.getMonth()]} ${d.getFullYear()}`);
+      }
+    }
+  });
+
+  (visits || []).forEach((v: any) => {
+    if (v?.waktu_hadir) {
+      const d = new Date(v.waktu_hadir);
+      if (!isNaN(d.getTime())) {
+        set.add(`${NAMA_BULAN[d.getMonth()]} ${d.getFullYear()}`);
+      }
+    }
+  });
+
+  const now = new Date();
+  for (let i = 0; i < 4; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    set.add(`${NAMA_BULAN[d.getMonth()]} ${d.getFullYear()}`);
+  }
+
+  return Array.from(set).sort((a, b) => {
+    const pa = parsePeriode(a);
+    const pb = parsePeriode(b);
+    if (pa.tahun !== pb.tahun) return pb.tahun - pa.tahun;
+    return pb.bulanIdx - pa.bulanIdx;
+  });
 }
 
 export default function Laporan() {
-  const { data } = useSipandu();
-  const [bulan, setBulan] = useState("Agustus 2026");
-  const { tahun, bulanIdx } = parsePeriode(bulan);
+  const { data, activeSessionId } = useSipandu();
 
-  const anggotaList = data.anggota;
-  // PRD F-08 / 35.1: hanya kunjungan berstatus Valid pada periode terpilih yang masuk laporan resmi
-  const visits = useMemo(
-    () =>
-      data.kunjunganAktif.filter(
-        (v: any) => v.status_verifikasi === "valid" && inPeriode(v.waktu_hadir, tahun, bulanIdx)
-      ),
-    [data.kunjunganAktif, tahun, bulanIdx]
+  // Merge seluruh kunjungan aktif + histori (dedup)
+  const allVisits = useMemo(() => {
+    const seen = new Set<string>();
+    const out: any[] = [];
+    for (const v of [...(data.kunjunganAktif || []), ...(data.kunjungan || [])]) {
+      if (!v?.id || seen.has(v.id)) continue;
+      seen.add(v.id);
+      out.push(v);
+    }
+    return out;
+  }, [data.kunjunganAktif, data.kunjungan]);
+
+  const jadwalMap = useMemo(() => {
+    const m = new Map<string, any>();
+    (data.jadwal || []).forEach((j: any) => m.set(j.id, j));
+    return m;
+  }, [data.jadwal]);
+
+  const periodeOptions = useMemo(
+    () => buildAvailablePeriodes(data.jadwal, allVisits),
+    [data.jadwal, allVisits]
   );
-  const pendingCount = data.kunjunganAktif.filter((v: any) => v.status_verifikasi !== "valid").length;
+
+  // Default periode: prioritaskan bulan dari sesi aktif / arsip atau bulan yang ada datanya
+  const [bulan, setBulan] = useState(() => {
+    const targetJadwalId = activeSessionId || data.sesiArsipId;
+    if (targetJadwalId) {
+      const j = (data.jadwal || []).find((x: any) => x.id === targetJadwalId);
+      if (j?.tanggal) {
+        const d = new Date(`${j.tanggal}T00:00:00`);
+        if (!isNaN(d.getTime())) return `${NAMA_BULAN[d.getMonth()]} ${d.getFullYear()}`;
+      }
+    }
+    // Cari bulan pertama yang ada datanya
+    const opts = buildAvailablePeriodes(data.jadwal, allVisits);
+    const jMap = new Map((data.jadwal || []).map((x: any) => [x.id, x]));
+    for (const p of opts) {
+      const { tahun: th, bulanIdx: bi } = parsePeriode(p);
+      const match = allVisits.some((v: any) => visitMatchesPeriode(v, th, bi, jMap));
+      if (match) return p;
+    }
+    const now = new Date();
+    return `${NAMA_BULAN[now.getMonth()]} ${now.getFullYear()}`;
+  });
+
+  const { tahun, bulanIdx } = parsePeriode(bulan);
+  const anggotaList = data.anggota;
   const anggotaMap = useMemo(() => new Map(anggotaList.map((a: any) => [a.id, a])), [anggotaList]);
 
-  // L-08: Daftar Hadir riil — peserta yang tercatat hadir (kunjungan valid periode terpilih)
+  // Info sesi dalam periode untuk header PDF (jejak audit: sesi mana saja yang diagregat).
+  const sesiPeriode = useMemo(
+    () => ringkasSesiPeriode(data.jadwal, tahun, bulanIdx),
+    [data.jadwal, tahun, bulanIdx]
+  );
+
+  // Semua peserta yang hadir pada periode ini (Presensi riil)
+  const allPeriode = useMemo(
+    () => allVisits.filter((v: any) => visitMatchesPeriode(v, tahun, bulanIdx, jadwalMap)),
+    [allVisits, tahun, bulanIdx, jadwalMap]
+  );
+
+  // Kunjungan yang valid (telah divalidasi Bidan)
+  const validVisits = useMemo(
+    () => allPeriode.filter((v: any) => v.status_verifikasi === "valid"),
+    [allPeriode]
+  );
+  const pendingCount = allPeriode.length - validVisits.length;
+
+  // Mode sumber data eksplisit: "terverifikasi" (resmi) atau "lapangan" (draft).
+  // Default = terverifikasi bila ada data valid, else lapangan. SEMUA metrik
+  // L-01 (D/S, gizi, pelayanan) memakai SATU sumber yang sama — tanpa campur.
+  const [modeOverride, setModeOverride] = useState<SumberLaporan | null>(null);
+  const modeEfektif: SumberLaporan = resolveSumberLaporan(validVisits.length, allPeriode.length, modeOverride);
+  const visits = modeEfektif === "terverifikasi" ? validVisits : allPeriode;
+  const isDraftReport = modeEfektif === "lapangan" && allPeriode.length > 0;
+  const modeLabel = labelSumberLaporan(modeEfektif, validVisits.length, allPeriode.length);
+
+  // L-08: Daftar Hadir riil — SELURUH peserta yang hadir pada sesi/periode ini
   const daftarHadir = useMemo(
     () =>
-      visits
+      allPeriode
         .map((v: any) => {
           const a = anggotaMap.get(v.anggota_id);
           return {
+            id: v.id,
             nama: a?.nama || "—",
             kategori: a?.kategori || "—",
             waktu: v.waktu_hadir ? new Date(v.waktu_hadir).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) : "—",
+            statusVerifikasi: v.status_verifikasi || "draft",
           };
         })
         .sort((x: any, y: any) => x.nama.localeCompare(y.nama)),
-    [visits, anggotaMap]
+    [allPeriode, anggotaMap]
   );
 
   // I. Cakupan Kehadiran Sasaran (D/S)
@@ -89,13 +226,13 @@ export default function Laporan() {
     let lebih = 0;
 
     balitaVisits.forEach((v: any) => {
-      const gizi = v.pengukuran?.status_gizi || "";
+      const gizi = String(v.pengukuran?.status_gizi || "").toLowerCase();
       const zbbu = v.pengukuran?.z_score_bbu;
-      if (gizi.includes("Buruk") || (typeof zbbu === "number" && zbbu < -3)) {
+      if (gizi.includes("buruk") || (typeof zbbu === "number" && zbbu < -3)) {
         buruk++;
-      } else if (gizi.includes("Kurang") || (typeof zbbu === "number" && zbbu < -2)) {
+      } else if (gizi.includes("kurang") || (typeof zbbu === "number" && zbbu < -2)) {
         kurang++;
-      } else if (gizi.includes("Lebih") || gizi.includes("Obesitas") || (typeof zbbu === "number" && zbbu > 1)) {
+      } else if (gizi.includes("lebih") || gizi.includes("obesitas") || (typeof zbbu === "number" && zbbu > 2)) {
         lebih++;
       } else {
         baik++;
@@ -122,7 +259,7 @@ export default function Laporan() {
       const p = v.pelayanan || {};
       if (p.vitamin_a) vitA++;
       if (p.pmt) pmt++;
-      if (p.imunisasi && p.imunisasi.length > 0) imun++;
+      if (normalizeImunisasiList(p).length > 0) imun++;
       if (p.tablet_fe) fe++;
       if (p.rujukan) rujukan++;
     });
@@ -144,20 +281,53 @@ export default function Laporan() {
     nama: SIPANDU_SEED.persona.ketua_pkk,
   };
 
+  const printedAt = useMemo(
+    () =>
+      new Date().toLocaleString("id-ID", {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    []
+  );
+  const statusLine = `${validVisits.length} Terverifikasi · ${allPeriode.length} Hadir di Sesi · Sumber: ${modeEfektif === "terverifikasi" ? "Terverifikasi" : "Lapangan"}`;
+
   return (
     <div className="p-4 sm:p-8 space-y-6">
       {/* Action Bar (no-print) */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 no-print">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Laporan Bulanan Posyandu (L-01)</h1>
-          <p className="text-sm text-gray-500">Laporan resmi teragregasi otomatis siap cetak / simpan PDF</p>
+        <div className="flex items-center gap-3">
+          <img
+            src="/logo/logo_only.png"
+            alt="Logo SIPANDU"
+            className="h-10 w-10 object-contain shrink-0"
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = "none";
+            }}
+          />
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Laporan Bulanan Posyandu (L-01)</h1>
+            <p className="text-sm text-gray-500">Laporan resmi teragregasi otomatis siap cetak / simpan PDF</p>
+          </div>
         </div>
-        <button
-          onClick={() => window.print()}
-          className="px-5 py-2.5 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl text-sm shadow-md shadow-sky-600/20 transition flex items-center gap-2"
-        >
-          <Printer className="w-4 h-4" /> Cetak / Simpan PDF
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => printDocument("laporan-l01")}
+            title="Cetak hanya Laporan Bulanan L-01 (A4)"
+            className="px-5 py-2.5 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl text-sm shadow-md shadow-sky-600/20 transition flex items-center gap-2"
+          >
+            <Printer className="w-4 h-4" /> Cetak L-01
+          </button>
+          <button
+            onClick={() => printDocument("laporan-l08")}
+            title="Cetak hanya Daftar Hadir L-08 (A4)"
+            className="px-5 py-2.5 bg-white hover:bg-gray-50 border border-sky-200 text-sky-700 font-bold rounded-xl text-sm shadow-sm transition flex items-center gap-2"
+          >
+            <Printer className="w-4 h-4" /> Cetak L-08
+          </button>
+        </div>
       </div>
 
       <div className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm flex flex-wrap items-center justify-between gap-4 no-print">
@@ -168,24 +338,49 @@ export default function Laporan() {
             onChange={(e) => setBulan(e.target.value)}
             className="px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-sm font-semibold outline-none"
           >
-            <option>Agustus 2026</option>
-            <option>Juli 2026</option>
-            <option>Juni 2026</option>
+            {periodeOptions.map((p) => (
+              <option key={p}>{p}</option>
+            ))}
           </select>
         </div>
-        <span className={`text-xs px-3 py-1 font-bold rounded-full ${pendingCount > 0 ? "bg-amber-100 text-amber-800" : "bg-green-100 text-green-800"}`}>
-          Status Data: {visits.length} Valid{pendingCount > 0 ? ` · ${pendingCount} belum tervalidasi (tidak masuk laporan)` : " · Semua tervalidasi"}
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold text-gray-500 uppercase">Sumber:</span>
+          <button
+            type="button"
+            onClick={() => setModeOverride("terverifikasi")}
+            disabled={validVisits.length === 0}
+            title={validVisits.length === 0 ? "Belum ada kunjungan tervalidasi" : `Pakai ${validVisits.length} kunjungan tervalidasi`}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition disabled:opacity-50 disabled:cursor-not-allowed ${modeEfektif === "terverifikasi" ? "bg-emerald-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+          >
+            Terverifikasi ({validVisits.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setModeOverride("lapangan")}
+            title={`Pakai seluruh ${allPeriode.length} kunjungan lapangan`}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${modeEfektif === "lapangan" ? "bg-amber-500 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+          >
+            Lapangan ({allPeriode.length})
+          </button>
+        </div>
+        <span className={`text-xs px-3 py-1 font-bold rounded-full ${modeEfektif === "terverifikasi" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
+          L-01 dari: {modeLabel}
         </span>
       </div>
 
-      {pendingCount > 0 && (
+      {isDraftReport && (
         <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 text-xs text-amber-900 font-semibold no-print">
-          Tidak semua kunjungan berstatus Valid. Angka laporan di bawah hanya menghitung kunjungan tervalidasi Bidan.
+          ⚠️ Mode Lapangan: angka L-01 di bawah memakai seluruh {allPeriode.length} kunjungan (termasuk yang belum divalidasi). Untuk angka resmi, pilih sumber Terverifikasi atau minta Bidan memvalidasi di menu Bidan &gt; Verifikasi.
         </div>
       )}
-      {visits.length === 0 && (
+      {!isDraftReport && pendingCount > 0 && (
+        <div className="bg-blue-50 border border-blue-300 rounded-2xl p-4 text-xs text-blue-900 font-semibold no-print">
+          ℹ️ Mode Terverifikasi: L-01 di bawah hanya memakai {validVisits.length} kunjungan resmi. {pendingCount} kunjungan lainnya belum masuk hitungan — alihkan ke sumber Lapangan untuk melihat semuanya.
+        </div>
+      )}
+      {allPeriode.length === 0 && (
         <div className="bg-rose-50 border border-rose-300 rounded-2xl p-6 text-sm text-rose-900 font-semibold no-print">
-          Tidak ada data valid untuk bulan ini. Minta Bidan untuk memverifikasi terlebih dahulu (alur: Draft → Diperiksa → Valid).
+          Tidak ada kunjungan tercatat pada {bulan}. Buka sesi posyandu di menu Jadwal Posyandu atau pilih periode lain pada pilihan di atas.
         </div>
       )}
 
@@ -310,11 +505,11 @@ export default function Laporan() {
         </div>
       </div>
 
-      {/* L-08: Daftar Hadir riil (printable) — peserta sesi periode terpilih */}
+      {/* L-08: Daftar Hadir riil (printable) — SELURUH kehadiran periode (mode tidak memfilter) */}
       <div className="bg-white p-8 sm:p-12 rounded-3xl border border-gray-200 shadow-sm printable-card max-w-4xl mx-auto text-gray-900 mt-6">
         <div className="text-center mb-6">
           <h2 className="text-lg font-bold underline uppercase">Daftar Hadir Peserta Posyandu (L-08)</h2>
-          <p className="text-xs text-gray-600 mt-1">Periode: <strong>{bulan}</strong></p>
+          <p className="text-xs text-gray-600 mt-1">Periode: <strong>{bulan}</strong> · Seluruh kehadiran, status verifikasi per baris</p>
         </div>
         <table className="w-full text-xs text-left border border-gray-300">
           <thead className="bg-gray-100 text-gray-900 font-bold border-b border-gray-300">
@@ -322,29 +517,69 @@ export default function Laporan() {
               <th className="p-2 border-r border-gray-300 text-center w-10">No</th>
               <th className="p-2 border-r border-gray-300">Nama Peserta</th>
               <th className="p-2 border-r border-gray-300">Kategori</th>
-              <th className="p-2 text-center">Waktu Hadir</th>
+              <th className="p-2 border-r border-gray-300 text-center">Waktu Hadir</th>
+              <th className="p-2 text-center">Status Verifikasi</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
             {daftarHadir.length === 0 ? (
               <tr>
-                <td colSpan={4} className="p-3 text-center text-gray-500">
+                <td colSpan={5} className="p-3 text-center text-gray-500">
                   Belum ada peserta tercatat hadir pada periode ini.
                 </td>
               </tr>
             ) : (
               daftarHadir.map((p: any, i: number) => (
-                <tr key={i}>
+                <tr key={p.id || i}>
                   <td className="p-2 border-r border-gray-200 text-center">{i + 1}</td>
                   <td className="p-2 border-r border-gray-200 font-medium">{p.nama}</td>
                   <td className="p-2 border-r border-gray-200">{p.kategori}</td>
-                  <td className="p-2 text-center">{p.waktu}</td>
+                  <td className="p-2 border-r border-gray-200 text-center">{p.waktu}</td>
+                  <td className="p-2 text-center font-semibold">
+                    {p.statusVerifikasi === "valid" ? (
+                      <span className="text-emerald-700">Valid ✓</span>
+                    ) : p.statusVerifikasi === "diperiksa" ? (
+                      <span className="text-amber-700">Diperiksa</span>
+                    ) : (
+                      <span className="text-slate-500">Draft</span>
+                    )}
+                  </td>
                 </tr>
               ))
             )}
           </tbody>
         </table>
       </div>
+
+      {/* Dokumen cetak terisolasi L-01 dan L-08 (portal body, A4). */}
+      {typeof document !== "undefined" &&
+        createPortal(
+          <div className="print-doc" id={printTargetElementId("laporan-l01")}>
+            <LaporanL01Print
+              bulan={bulan}
+              printedAt={printedAt}
+              statusLine={statusLine}
+              isDraft={isDraftReport}
+              sumberDataLabel={modeLabel}
+              jumlahSesi={sesiPeriode.jumlah}
+              rentangTanggal={sesiPeriode.rentang}
+              cakupanDS={cakupanDS}
+              statusGiziBalita={statusGiziBalita}
+              pelayanan={pelayanan}
+              bidanNama={bidan.nama}
+              bidanNip={bidan.nip_sip || "—"}
+              ketuaNama={ketua.nama}
+            />
+          </div>,
+          document.body
+        )}
+      {typeof document !== "undefined" &&
+        createPortal(
+          <div className="print-doc" id={printTargetElementId("laporan-l08")}>
+            <LaporanL08Print bulan={bulan} printedAt={printedAt} daftarHadir={daftarHadir} />
+          </div>,
+          document.body
+        )}
 
       {/* H1: Katalog laporan L-01..L-08 (PRD F-09) — print per modul */}
       <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm no-print space-y-3">

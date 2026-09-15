@@ -2,12 +2,13 @@
  * SIPANDU - Verifikasi Kunjungan oleh Bidan
  * Alur verifikasi PRD F-08: Draft -> Diperiksa -> Valid (dapat dikembalikan ke Draft).
  */
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { Link } from "react-router-dom";
-import { CheckCircle2, ClipboardList, FileCheck2, Eye, Undo2, CheckCheck, X } from "lucide-react";
+import { CheckCircle2, ClipboardList, FileCheck2, Eye, Undo2, CheckCheck, X, RotateCcw } from "lucide-react";
 import { CategoryBadge } from "@/components/meja/MejaShared";
 import { useAuth } from "@/lib/auth-context";
 import { useSipandu } from "@/lib/data-store";
+import { getAllSessionVisits } from "@/lib/meja1Logic";
 
 const VERIF_BADGE: Record<string, { label: string; cls: string; icon?: React.ReactNode }> = {
   draft: { label: "Draft", cls: "bg-slate-100 text-slate-600 border-slate-200" },
@@ -16,9 +17,57 @@ const VERIF_BADGE: Record<string, { label: string; cls: string; icon?: React.Rea
 };
 
 export default function BidanVerifikasi() {
-  const { showToast } = useAuth();
-  const { data, verifikasiKunjungan, verifikasiBulkKunjungan } = useSipandu();
-  const list = data.kunjunganAktif;
+  const { showToast, currentRole } = useAuth();
+  const { data, activeSessionId, verifikasiKunjungan, verifikasiBulkKunjungan, reopenKunjungan } = useSipandu();
+  const targetSessionId = activeSessionId || data.sesiArsipId;
+  const list = useMemo(() => {
+    if (targetSessionId) {
+      return getAllSessionVisits(data.kunjunganAktif, data.kunjungan, targetSessionId);
+    }
+    // Jika tidak ada sesi aktif, tampilkan seluruh kunjungan aktif + histori (dedup)
+    const seen = new Set<string>();
+    const all = [...(data.kunjunganAktif || []), ...(data.kunjungan || [])];
+    return all.filter((k: any) => {
+      if (!k?.id || seen.has(k.id)) return false;
+      seen.add(k.id);
+      return true;
+    });
+  }, [data.kunjunganAktif, data.kunjungan, targetSessionId]);
+  const canReopen = currentRole === "bidan" || currentRole === "super_admin";
+
+  // M4-022 + F-05: kunjungan selesai ATAU menunggu finalisasi (meja_5) pada sesi
+  // aktif dapat dibuka kembali untuk koreksi (reopenAlur menerima keduanya).
+  const finishedSessionVisits = useMemo(
+    () => getAllSessionVisits(data.kunjunganAktif, data.kunjungan, targetSessionId).filter(
+      (k: any) => ["selesai", "meja_5_penyuluhan"].includes(k.status_alur)
+    ),
+    [data.kunjunganAktif, data.kunjungan, targetSessionId]
+  );
+  const anggotaById = useMemo(() => {
+    const m = new Map<string, any>();
+    (data.anggota || []).forEach((a: any) => m.set(a.id, a));
+    return m;
+  }, [data.anggota]);
+
+  const [reopenArmedId, setReopenArmedId] = useState<string | null>(null);
+  const [reopening, setReopening] = useState(false);
+
+  async function jalankanReopen(kunjunganId: string) {
+    if (reopenArmedId !== kunjunganId) {
+      setReopenArmedId(kunjunganId);
+      return;
+    }
+    setReopening(true);
+    try {
+      await reopenKunjungan(kunjunganId, "meja_4_pelayanan");
+      showToast("Kunjungan dibuka kembali ke Meja 4 untuk koreksi (audit REOPEN tercatat).", "success");
+      setReopenArmedId(null);
+    } catch {
+      // Toast error sudah ditangani store; tetap di halaman.
+    } finally {
+      setReopening(false);
+    }
+  }
 
   const draftCount = list.filter((k: any) => (k.status_verifikasi || "draft") === "draft").length;
   const diperiksaCount = list.filter((k: any) => k.status_verifikasi === "diperiksa").length;
@@ -30,18 +79,30 @@ export default function BidanVerifikasi() {
 
   async function validasiSemua() {
     if (pendingIds.length === 0) return;
-    await verifikasiBulkKunjungan(pendingIds, "valid");
-    showToast(`${pendingIds.length} kunjungan divalidasi sekaligus oleh Bidan.`, "success");
+    try {
+      await verifikasiBulkKunjungan(pendingIds, "valid");
+      showToast(`${pendingIds.length} kunjungan divalidasi sekaligus oleh Bidan.`, "success");
+    } catch {
+      // Toast error sudah dari store; perubahan yang gagal dibatalkan otomatis.
+    }
   }
 
   async function mulaiPeriksa(id: string) {
-    await verifikasiKunjungan(id, "diperiksa");
-    showToast("Kunjungan ditandai sedang diperiksa oleh Bidan.", "info");
+    try {
+      await verifikasiKunjungan(id, "diperiksa");
+      showToast("Kunjungan ditandai sedang diperiksa oleh Bidan.", "info");
+    } catch {
+      // Toast error sudah dari store.
+    }
   }
 
   async function validasi(id: string) {
-    await verifikasiKunjungan(id, "valid");
-    showToast("Data kunjungan terverifikasi valid oleh Bidan.", "success");
+    try {
+      await verifikasiKunjungan(id, "valid");
+      showToast("Data kunjungan terverifikasi valid oleh Bidan.", "success");
+    } catch {
+      // Toast error sudah dari store.
+    }
   }
 
   // Kembalikan ke Draft wajib menyertakan catatan perbaikan (PRD F-08)
@@ -55,10 +116,14 @@ export default function BidanVerifikasi() {
       showToast("Catatan perbaikan wajib diisi sebelum mengembalikan ke Draft.", "danger");
       return;
     }
-    await verifikasiKunjungan(returnId, "draft", note);
-    showToast("Kunjungan dikembalikan ke Draft untuk diperbaiki Kader.", "warning");
-    setReturnId(null);
-    setReturnNote("");
+    try {
+      await verifikasiKunjungan(returnId, "draft", note);
+      showToast("Kunjungan dikembalikan ke Draft untuk diperbaiki Kader.", "warning");
+      setReturnId(null);
+      setReturnNote("");
+    } catch {
+      // Toast error sudah dari store.
+    }
   }
 
   return (
@@ -191,6 +256,61 @@ export default function BidanVerifikasi() {
           </tbody>
         </table>
       </div>
+
+      {canReopen && (
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+            <div>
+              <h3 className="font-bold text-gray-900 text-sm">Kunjungan Selesai & Menunggu Finalisasi</h3>
+              <p className="text-xs text-gray-500">Koreksi resmi: kembalikan ke Meja 4 (tercatat audit REOPEN, verifikasi ulang wajib).</p>
+            </div>
+            <span className="text-xs text-emerald-700 font-bold bg-emerald-50 border border-emerald-100 px-2.5 py-1 rounded-full">
+              {finishedSessionVisits.length} Kunjungan
+            </span>
+          </div>
+          {finishedSessionVisits.length === 0 ? (
+            <p className="px-4 py-6 text-center text-gray-400 text-xs">Belum ada kunjungan selesai atau menunggu finalisasi pada sesi ini.</p>
+          ) : (
+            <div className="divide-y divide-gray-100">
+              {finishedSessionVisits.map((k: any) => {
+                const a = anggotaById.get(k.anggota_id);
+                const armed = reopenArmedId === k.id;
+                return (
+                  <div key={k.id} className="px-4 py-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <p className="font-bold text-gray-900 text-xs truncate">{a?.nama || k.anggota_id}</p>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                          k.status_alur === "selesai"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "bg-sky-100 text-sky-800"
+                        }`}>
+                          {k.status_alur === "selesai" ? "Selesai" : "Meja 5"}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-gray-500">
+                        Hadir {k.waktu_hadir ? new Date(k.waktu_hadir).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) : "—"} · Verifikasi: {k.status_verifikasi || "draft"}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => jalankanReopen(k.id)}
+                      disabled={reopening}
+                      className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold transition disabled:opacity-60 inline-flex items-center gap-1.5 ${
+                        armed
+                          ? "bg-rose-600 hover:bg-rose-700 text-white"
+                          : "border border-amber-300 text-amber-700 hover:bg-amber-50"
+                      }`}
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      {armed ? "Yakin? Klik lagi" : "Buka ke Meja 4"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {returnId && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setReturnId(null)}>

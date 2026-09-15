@@ -39,3 +39,10 @@ Thumbs.db
 *.swp
 .vercel
 .env*
+
+# Local scratch/probe scripts — JANGAN commit (berisi kredensial live)
+scratch/
+*.scratch.*
+
+# Local codebase-memory index artifact
+.codebase-memory/

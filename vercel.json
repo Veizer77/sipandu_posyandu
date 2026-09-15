@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/ecosystem/citizen-summary.ts": {
+      "maxDuration": 10
+    }
+  }
+}

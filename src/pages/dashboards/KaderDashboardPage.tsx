@@ -7,9 +7,10 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useSipandu } from "@/lib/data-store";
+import { getAllSessionVisits } from "@/lib/meja1Logic";
 
 function formatJadwal(jadwal: any) {
-  if (!jadwal?.tanggal) return "Sabtu, 15 Agustus 2026 (Posyandu Rutin)";
+  if (!jadwal?.tanggal) return "Belum ada sesi aktif — buka sesi hari H di Jadwal Posyandu";
   const dateStr = new Date(jadwal.tanggal).toLocaleDateString("id-ID", {
     weekday: "long",
     day: "numeric",
@@ -21,14 +22,20 @@ function formatJadwal(jadwal: any) {
 
 export default function KaderDashboardPage() {
   const { currentUser } = useAuth();
-  const { data } = useSipandu();
+  const { data, activeSessionId } = useSipandu();
   const navigate = useNavigate();
 
   const totalSasaran = data.anggota.filter((a: any) => a.status_aktif && a.kategori !== "umum").length || data.anggota.length;
-  const totalHadir = data.kunjunganAktif.length;
-  const persenDS = totalSasaran > 0 ? Math.round((totalHadir / totalSasaran) * 100) : 0;
+  // F-07: KPI D/S session-scoped (bukan seluruh kunjunganAktif lintas sesi).
+  const sessionVisits = useMemo(
+    () => getAllSessionVisits(data.kunjunganAktif, data.kunjungan, activeSessionId),
+    [data.kunjunganAktif, data.kunjungan, activeSessionId]
+  );
+  const totalHadir = sessionVisits.length;
+  const persenDS = totalSasaran > 0 ? Math.min(100, Math.round((totalHadir / totalSasaran) * 100)) : 0;
 
-  const activeJadwal = data.jadwal.find((j: any) => j.status === "aktif") || data.jadwal[0];
+  // F-07: tanpa fallback jadwal[0] — null bila tidak ada sesi aktif.
+  const activeJadwal = (data.jadwal || []).find((j: any) => j.status === "aktif") || null;
   const allVisits = useMemo(() => [...data.kunjunganAktif, ...data.kunjungan], [data.kunjunganAktif, data.kunjungan]);
 
   const riskTargets = useMemo(() => {
@@ -118,8 +125,8 @@ export default function KaderDashboardPage() {
     return list;
   }, [data.anggota, allVisits]);
 
-  // First attendee waiting for Meja 3 & 4
-  const firstWaitingId = data.kunjunganAktif[0]?.anggota_id;
+  // First attendee waiting for Meja 3 & 4 — dari visit sesi aktif yang belum selesai.
+  const firstWaitingId = sessionVisits.find((k: any) => k.status_alur !== "selesai")?.anggota_id;
 
   return (
     <div className="p-4 sm:p-8 space-y-6">

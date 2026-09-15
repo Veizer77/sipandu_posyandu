@@ -2,6 +2,23 @@
  * SIPANDU - Meja 2: Pengukuran & Antropometri
  * Form adaptif per kategori + live Z-Score WHO + status klinis multi-kategori + deteksi risiko otomatis.
  * Layout full-width responsif & konsisten dengan alur 5 meja posyandu (PRD v3.0.0 Bab 9 & 34.4).
+ *
+ * PERBAIKAN AUDIT MEJA-2 (MEJA-2-AUDIT.md):
+ * - M2-001: antrean HANYA sesi aktif (getVisitsForActiveSession).
+ * - M2-002/M2-024: detail visit via findVisitForActiveSession; tanpa visit aktif -> blocked.
+ * - M2-003: tanpa fallback jadwal[0], tanpa auto-create visit; updatePengukuran menerima kunjunganId.
+ * - M2-005/M2-023: draft dihapus HANYA setelah save sukses; error -> draft utuh + tetap di halaman.
+ * - M2-006: isSaving cegah double submit; unique pengukuran(kunjungan_id) di DB.
+ * - M2-010: status_pertumbuhan default "data_baru" (bukan "naik").
+ * - M2-012/M2-013: kategori kanonis; invalid -> blocked (bukan form Umum).
+ * - M2-014/M2-015: validator domain + cross-field TD (sistolik > diastolik).
+ * - M2-016/M2-017: baseline BB terbaru terurut + riwayat eksplisit (exclude visit aktif).
+ * - M2-018: dependency risiko mencakup kunjunganAktif + kunjungan.
+ * - M2-019: normalisasi imunisasi boundary ke string[].
+ * - M2-020: key risiko stabil (di Meja2Panels).
+ * - M2-021/M2-022: draft key berversi (sessionId+visitId); server lebih baru menang.
+ * - M2-026: field kanonis lingkar_lengan / td_sistolik / td_diastolik / gula_darah_sewaktu.
+ * - M2-028/M2-029/M2-030: antrean+panel diekstrak; Map memoized; effect depend visitId.
  */
 import React, { useMemo, useState, useEffect, useRef } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -9,146 +26,83 @@ import {
   Scale,
   ArrowLeft,
   ArrowRight,
-  Activity,
-  History,
-  HeartPulse,
   AlertTriangle,
   CheckCircle2,
   User,
-  Baby,
-  Sparkles,
   Info,
+  CalendarX2,
 } from "lucide-react";
 import { MejaStepper, CategoryBadge } from "@/components/meja/MejaShared";
 import { Avatar } from "@/components/Avatar";
+import { Meja2Antrean } from "@/components/meja/Meja2Antrean";
+import { Meja2AnalysisCard, Meja2HistoryCard, Meja2RiskCard } from "@/components/meja/Meja2Panels";
 import { useAuth } from "@/lib/auth-context";
-import { getRolePrefix } from "@/lib/role-routes";
+import { getRolePrefix, getRoleMenuPath } from "@/lib/role-routes";
 import { useSipandu } from "@/lib/data-store";
 import WHO_ENGINE, { deteksiRisiko } from "@/utils/zscoreCalculator";
 import { adaImunisasiTertunggak } from "@/utils/jadwalImunisasi";
 import { maskNik } from "@/lib/utils";
+import { filterVisitsForMeja, isVisitPastMejaStage } from "@/lib/meja1Logic";
+import { labelStatusAlur } from "@/lib/rekapLogic";
+import {
+  getVisitsForActiveSession,
+  findVisitForActiveSession,
+  resolveKategoriMeja2,
+  validatePengukuran,
+  getLatestWeightBefore,
+  getHistoryForAnggota,
+  normalizeImunisasiList,
+  canonicalizePengukuranForm,
+  buildDraftKey,
+  packDraft,
+  unpackDraft,
+  pickDraftOrServer,
+  type KategoriKanonis,
+} from "@/lib/meja2Logic";
 
 // Class constants for unified, premium form controls
 const inputContainerCls = "relative";
 const inputCls =
   "w-full pl-4 pr-14 py-3 bg-gray-50/80 hover:bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:border-sky-500 focus:ring-2 focus:ring-sky-100 font-semibold text-gray-900 text-sm outline-none transition shadow-xs";
+const inputClsErr =
+  "w-full pl-4 pr-14 py-3 bg-rose-50/60 hover:bg-rose-50/80 border border-rose-300 rounded-xl focus:bg-white focus:border-rose-500 focus:ring-2 focus:ring-rose-100 font-semibold text-gray-900 text-sm outline-none transition shadow-xs";
 const inputUnitCls =
   "absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400 pointer-events-none select-none";
 const labelCls = "block text-xs font-bold text-gray-700 mb-1.5";
+const fieldErrCls = "text-[11px] text-rose-600 font-semibold mt-1";
 
-function AntreanMeja2({ data, navigate }: { data: any; navigate: any }) {
-  const { currentRole } = useAuth();
-  const rolePrefix = getRolePrefix(currentRole);
-  const list = data.kunjunganAktif;
-  const sudahDiukur = list.filter(
-    (k: any) => k.pengukuran && (k.pengukuran.berat_badan || k.pengukuran.tinggi_badan)
-  ).length;
-  const belumDiukur = list.length - sudahDiukur;
+function FieldErr({ msg }: { msg?: string }) {
+  if (!msg) return null;
+  return <p className={fieldErrCls}>{msg}</p>;
+}
 
+/** Layar blocked generik: sesi/kategori/visit tidak memenuhi syarat. */
+function BlockedState({
+  icon,
+  title,
+  desc,
+  backTo,
+  backLabel,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  desc: string;
+  backTo: string;
+  backLabel: string;
+}) {
   return (
     <div className="p-4 sm:p-8 space-y-6">
       <MejaStepper activeMeja={2} />
-
-      <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <div className="inline-flex items-center gap-2 px-3 py-0.5 bg-blue-100 text-blue-800 rounded-full text-xs font-semibold mb-1">
-            <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse" /> Antrean Meja 2
-          </div>
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Meja 2: Pengukuran & Antropometri</h1>
-          <p className="text-xs text-gray-500">
-            Pilih peserta yang telah registrasi di Meja 1 untuk melakukan pengukuran antropometri.
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="px-4 py-2 bg-blue-50 border border-blue-200 rounded-xl text-center min-w-[100px]">
-            <span className="text-[10px] text-blue-700 font-bold uppercase">Sudah Diukur</span>
-            <p className="text-lg font-bold text-blue-800 leading-none mt-0.5">{sudahDiukur}</p>
-          </div>
-          <div className="px-4 py-2 bg-amber-50 border border-amber-200 rounded-xl text-center min-w-[100px]">
-            <span className="text-[10px] text-amber-700 font-bold uppercase">Menunggu</span>
-            <p className="text-lg font-bold text-amber-800 leading-none mt-0.5">{belumDiukur}</p>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-        {list.length === 0 ? (
-          <div className="p-12 text-center">
-            <Scale className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-            <p className="text-sm font-bold text-gray-700">Belum Ada Peserta Terdaftar di Meja 1</p>
-            <p className="text-xs text-gray-400 mt-1">
-              Lakukan pendaftaran kehadiran peserta di Meja 1 terlebih dahulu.
-            </p>
-            <Link
-              to={`${rolePrefix}/meja1`}
-              className="mt-4 inline-block px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-semibold"
-            >
-              Buka Meja 1 Registrasi
-            </Link>
-          </div>
-        ) : (
-          <div className="divide-y divide-gray-100">
-            {list.map((k: any) => {
-              const a = data.anggota.find((x: any) => x.id === k.anggota_id);
-              if (!a) return null;
-              const p = k.pengukuran;
-              const isDone = Boolean(p && (p.berat_badan || p.tinggi_badan));
-              const keluarga = data.keluarga.find((x: any) => x.id === a.keluarga_id);
-
-              return (
-                <div
-                  key={k.id}
-                  className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-gray-50/60 transition"
-                >
-                  <div className="flex items-center gap-3.5">
-                    <Avatar nama={a.nama} className="w-12 h-12 rounded-2xl" />
-                    <div>
-                      <div className="flex items-center gap-2 mb-1 flex-wrap">
-                        <h4 className="font-bold text-gray-900 text-sm">{a.nama}</h4>
-                        <CategoryBadge kategori={a.kategori} />
-                        {isDone ? (
-                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-full flex items-center gap-1">
-                            <CheckCircle2 className="w-3 h-3" /> Sudah Diukur
-                          </span>
-                        ) : (
-                          <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] font-bold rounded-full animate-pulse">
-                            Menunggu Pengukuran
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-gray-500">
-                        NIK: {maskNik(a.nik)} · Usia:{" "}
-                        {WHO_ENGINE.hitungUsia(a.tanggal_lahir)?.usiaTeks || "—"}
-                        {isDone && (
-                          <>
-                            {" · "}
-                            {p.berat_badan && `BB: ${p.berat_badan} kg `}
-                            {p.tinggi_badan && `· TB: ${p.tinggi_badan} cm `}
-                            {p.lingkar_lengan_atas && `· LILA: ${p.lingkar_lengan_atas} cm `}
-                            {p.td_sistolik && `· TD: ${p.td_sistolik}/${p.td_diastolik} `}
-                            {p.status_gizi && `· Status: ${p.status_gizi}`}
-                          </>
-                        )}
-                      </p>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => navigate(`${rolePrefix}/meja2/${a.id}`)}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold transition shadow-xs flex items-center justify-center gap-1.5 ${
-                      isDone
-                        ? "bg-gray-100 hover:bg-gray-200 text-gray-700"
-                        : "bg-sky-600 hover:bg-sky-700 text-white shadow-sky-600/20"
-                    }`}
-                  >
-                    <Scale className="w-4 h-4" />
-                    <span>{isDone ? "Edit Pengukuran" : "Mulai Ukur"}</span>
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
+      <div className="bg-white p-12 rounded-2xl border border-gray-100 shadow-sm text-center">
+        <div className="mx-auto mb-3 w-fit">{icon}</div>
+        <p className="text-sm font-bold text-gray-700">{title}</p>
+        <p className="text-xs text-gray-400 mt-1 max-w-md mx-auto">{desc}</p>
+        <Link
+          to={backTo}
+          className="mt-4 inline-block px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-semibold"
+        >
+          {backLabel}
+        </Link>
       </div>
     </div>
   );
@@ -159,103 +113,147 @@ export default function Meja2() {
   const navigate = useNavigate();
   const { showToast, currentRole } = useAuth();
   const rolePrefix = getRolePrefix(currentRole);
-  const { data, updatePengukuran } = useSipandu();
+  const jadwalUrl = getRoleMenuPath("/posyandu", currentRole);
+  const { data, activeSessionId, updatePengukuran } = useSipandu();
 
-  const anggota = data.anggota.find((a: any) => a.id === anggotaId);
+  // M2-029: memoized Maps — hindari lookup O(n²) berulang.
+  const anggotaById = useMemo(() => {
+    const m = new Map<string, any>();
+    (data.anggota || []).forEach((a: any) => m.set(a.id, a));
+    return m;
+  }, [data.anggota]);
+  const keluargaById = useMemo(() => {
+    const m = new Map<string, any>();
+    (data.keluarga || []).forEach((k: any) => m.set(k.id, k));
+    return m;
+  }, [data.keluarga]);
 
-  // Track loaded participant & dirty state so background polling or data refresh NEVER wipes active input
-  const loadedAnggotaIdRef = useRef<string | undefined>(anggotaId);
+  const anggota = anggotaId ? anggotaById.get(anggotaId) : undefined;
+  const sesiAktif = (data.jadwal || []).find((j: any) => j.id === activeSessionId) || null;
+  const multipleActive = (data.jadwal || []).filter((j: any) => j?.status === "aktif").length > 1;
+
+  // M2-001: antrean sesi aktif saja. F-05: hanya tahap Meja 2 (meja_1/meja_2);
+  // visit selesai ATAU sudah melewati Meja 2 (meja_3+) tidak masuk antrean kerja.
+  const sessionVisits = useMemo(
+    () =>
+      filterVisitsForMeja(
+        getVisitsForActiveSession(data.kunjunganAktif, activeSessionId).filter(
+          (k: any) => k?.status_alur !== "selesai"
+        ),
+        2
+      ),
+    [data.kunjunganAktif, activeSessionId]
+  );
+
+  // M2-002: visit detail terikat sesi aktif (bukan sekadar anggota).
+  const allVisits = useMemo(
+    () => [...(data.kunjunganAktif || []), ...(data.kunjungan || [])],
+    [data.kunjunganAktif, data.kunjungan]
+  );
+  const activeVisit = anggotaId
+    ? findVisitForActiveSession(data.kunjunganAktif, anggotaId, activeSessionId)
+    : undefined;
+  const sessionHistoryVisit = anggotaId
+    ? findVisitForActiveSession(data.kunjungan, anggotaId, activeSessionId)
+    : undefined;
+  const activeVisitId = activeVisit?.id;
+  const serverUpdatedAt =
+    activeVisit?.updated_at || activeVisit?.pengukuran?.updated_at || activeVisit?.waktu_hadir || null;
+
+  // M2-012/M2-013: kategori kanonis; invalid -> blocked.
+  const kategoriRes = useMemo(
+    () => (anggota ? resolveKategoriMeja2(anggota.kategori, anggota.jenis_kelamin) : null),
+    [anggota]
+  );
+  const kategori: KategoriKanonis | null = kategoriRes?.valid ? kategoriRes.canonical : null;
+
+  const isAnak = kategori === "bayi" || kategori === "balita";
+  const isBumil = kategori === "ibu_hamil";
+  const isLansia = kategori === "lansia";
+  const isWus = kategori === "wus";
+
+  // ---- Draft berversi (M2-021/M2-022) ----
+  const draftParts =
+    anggotaId && activeSessionId && activeVisitId
+      ? { anggotaId, sessionId: activeSessionId, visitId: activeVisitId }
+      : null;
+  const draftKey = draftParts ? buildDraftKey(draftParts) : null;
+  const loadedTargetRef = useRef<string | null>(null);
   const isDirtyRef = useRef<boolean>(false);
+  const isSavingRef = useRef<boolean>(false);
 
-  const [form, setForm] = useState<any>(() => {
-    if (!anggotaId) return {};
+  const [form, setForm] = useState<Record<string, any>>({});
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+
+  function readStoredDraft(): { form: Record<string, any> | null; savedAt: string | null } {
+    if (!draftKey || !draftParts) return { form: null, savedAt: null };
     try {
-      const draft = sessionStorage.getItem(`sipandu_draft_meja2_${anggotaId}`);
-      if (draft) {
-        const parsed = JSON.parse(draft);
-        if (parsed && typeof parsed === "object" && Object.keys(parsed).length > 0) {
-          isDirtyRef.current = true;
-          return parsed;
-        }
-      }
-    } catch {}
-    const visit = data.kunjunganAktif.find((k: any) => k.anggota_id === anggotaId);
-    return { ...(visit?.pengukuran || {}) };
-  });
+      const raw = sessionStorage.getItem(draftKey);
+      if (!raw) return { form: null, savedAt: null };
+      const parsed = JSON.parse(raw);
+      const f = unpackDraft(raw, draftParts);
+      if (!f) return { form: null, savedAt: null };
+      return { form: f, savedAt: typeof parsed?.savedAt === "string" ? parsed.savedAt : null };
+    } catch {
+      return { form: null, savedAt: null };
+    }
+  }
 
-  // Re-sync form ONLY if switching participant, or initial data loads when form is untouched
+  // M2-030: sync HANYA saat ganti target (sesi/visit/anggota) atau data server tiba saat form bersih.
   useEffect(() => {
-    if (!anggotaId) return;
+    if (!anggotaId || !draftParts || !draftKey || !activeVisit) return;
+    const targetKey = `${draftParts.sessionId}:${draftParts.visitId}:${draftParts.anggotaId}`;
 
-    // Case 1: Switching to a DIFFERENT participant
-    if (loadedAnggotaIdRef.current !== anggotaId) {
-      loadedAnggotaIdRef.current = anggotaId;
+    const serverForm = canonicalizePengukuranForm(activeVisit.pengukuran);
+    const serverHasData = Object.values(serverForm).some((v) => v !== undefined && v !== null && v !== "");
+
+    if (loadedTargetRef.current !== targetKey) {
+      loadedTargetRef.current = targetKey;
       isDirtyRef.current = false;
+      setFieldErrors({});
+      setSubmitError(null);
 
-      let initialData: any = null;
-      try {
-        const draft = sessionStorage.getItem(`sipandu_draft_meja2_${anggotaId}`);
-        if (draft) {
-          const parsed = JSON.parse(draft);
-          if (parsed && typeof parsed === "object" && Object.keys(parsed).length > 0) {
-            initialData = parsed;
-            isDirtyRef.current = true;
-          }
+      const { form: draftForm, savedAt } = readStoredDraft();
+      if (draftForm) {
+        const winner = pickDraftOrServer(savedAt, serverUpdatedAt, serverHasData);
+        if (winner === "server") {
+          try {
+            sessionStorage.removeItem(draftKey);
+          } catch {}
+          setForm(serverForm);
+        } else {
+          isDirtyRef.current = true;
+          setForm(draftForm);
         }
-      } catch {}
-
-      if (!initialData) {
-        const visit = data.kunjunganAktif.find((k: any) => k.anggota_id === anggotaId);
-        initialData = { ...(visit?.pengukuran || {}) };
+      } else {
+        setForm(serverForm);
       }
-      setForm(initialData);
       return;
     }
 
-    // Case 2: Same participant - if user is editing or has dirty fields, DO NOT OVERWRITE!
     if (isDirtyRef.current) return;
-
-    // Case 3: Same participant, but initial visit data just arrived from background load
-    const visit = data.kunjunganAktif.find((k: any) => k.anggota_id === anggotaId);
-    if (visit?.pengukuran && Object.keys(visit.pengukuran).length > 0) {
-      setForm((prev: any) => {
-        if (isDirtyRef.current || Object.keys(prev).length > 0) return prev;
-        return { ...visit.pengukuran };
-      });
+    if (serverHasData) {
+      setForm((prev: any) => (Object.keys(prev || {}).length === 0 ? serverForm : prev));
     }
-  }, [anggotaId, data.kunjunganAktif]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anggotaId, activeVisitId, serverUpdatedAt]);
 
   const usiaInfo = anggota ? WHO_ENGINE.hitungUsia(anggota.tanggal_lahir) : null;
-  const lastVisit = anggota ? data.kunjungan.find((k: any) => k.anggota_id === anggota.id) : null;
-  const lastWeight = lastVisit?.pengukuran?.berat_badan || null;
+  // M2-016: baseline BB terbaru terurut waktu, exclude visit aktif.
+  const lastWeight = anggota ? getLatestWeightBefore(allVisits, anggota.id, activeVisitId) : null;
 
   const keluarga = useMemo(() => {
     if (!anggota) return null;
-    return data.keluarga.find((k: any) => k.id === anggota.keluarga_id);
-  }, [anggota, data.keluarga]);
+    return keluargaById.get(anggota.keluarga_id) || null;
+  }, [anggota, keluargaById]);
 
-  // Riwayat kunjungan 3 bulan terakhir (PRD 34.4)
+  // M2-017: riwayat eksplisit — semua sesi sebelumnya, dedup, terbaru, exclude visit aktif.
   const riwayatKunjungan = useMemo(() => {
     if (!anggota) return [];
-    return (data.kunjungan || [])
-      .filter(
-        (k: any) =>
-          k.anggota_id === anggota.id &&
-          k.pengukuran &&
-          (k.pengukuran.berat_badan || k.pengukuran.tinggi_badan || k.pengukuran.td_sistolik)
-      )
-      .sort(
-        (a: any, b: any) =>
-          new Date(b.waktu_hadir || 0).getTime() - new Date(a.waktu_hadir || 0).getTime()
-      )
-      .slice(0, 3);
-  }, [anggota, data.kunjungan]);
-
-  const isAnak = anggota?.kategori === "bayi" || anggota?.kategori === "balita";
-  const isBumil = anggota?.kategori === "ibu_hamil" || anggota?.kategori === "bumil";
-  const isLansia = anggota?.kategori === "lansia";
-  const isWus = anggota?.kategori === "wus";
-  const isUmum = !isAnak && !isBumil && !isLansia && !isWus;
+    return getHistoryForAnggota(allVisits, anggota.id, activeVisitId, 3);
+  }, [anggota, allVisits, activeVisitId]);
 
   // Analisis Z-Score balita
   const analysis = useMemo(() => {
@@ -379,16 +377,20 @@ export default function Meja2() {
     return { label: "Normal (< 140 mg/dL)", badge: "bg-emerald-100 text-emerald-800 border-emerald-200" };
   }, [form.gula_darah_sewaktu]);
 
-  // Deteksi Risiko Otomatis
-  const risikoList = useMemo(() => {
-    if (!anggota) return [];
+  // M2-019: himpunan imunisasi ternormalisasi (array/string/null/boolean aman).
+  const imunisasiDiberikan = useMemo(() => {
     const diberikan = new Set<string>();
-    [...data.kunjungan, ...data.kunjunganAktif].forEach((k: any) => {
-      if (k?.anggota_id !== anggota.id) return;
-      (k?.pelayanan?.imunisasi || []).forEach((j: string) => diberikan.add(j));
+    allVisits.forEach((k: any) => {
+      if (k?.anggota_id !== anggota?.id) return;
+      normalizeImunisasiList(k?.pelayanan).forEach((j) => diberikan.add(j));
     });
-    (anggota as any)?.imunisasi?.forEach((r: any) => diberikan.add(r.jenis));
+    normalizeImunisasiList(null, (anggota as any)?.imunisasi).forEach((j) => diberikan.add(j));
+    return diberikan;
+  }, [allVisits, anggota]);
 
+  // Deteksi Risiko Otomatis (M2-018: deps mencakup kedua array kunjungan).
+  const risikoList = useMemo(() => {
+    if (!anggota || !kategori) return [];
     const pengukuranInput: any = {
       ...form,
       statusPertumbuhan: analysis?.statusPertumbuhan,
@@ -398,24 +400,123 @@ export default function Meja2() {
     };
     const riwayatInput = {
       imunisasiTertunggak:
-        isAnak && usiaInfo ? adaImunisasiTertunggak(usiaInfo.totalBulan, Array.from(diberikan)) : false,
+        isAnak && usiaInfo ? adaImunisasiTertunggak(usiaInfo.totalBulan, Array.from(imunisasiDiberikan)) : false,
     };
-    return deteksiRisiko(anggota.kategori, pengukuranInput, riwayatInput);
-  }, [anggota, analysis, form, data.kunjungan]);
+    // M2-012: engine selalu menerima kategori kanonis.
+    return deteksiRisiko(kategori, pengukuranInput, riwayatInput);
+  }, [anggota, kategori, analysis, form, usiaInfo, lastWeight, isAnak, imunisasiDiberikan]);
 
+  // ---- Antrean (tanpa anggotaId) ----
   if (!anggota) {
-    return <AntreanMeja2 data={data} navigate={navigate} />;
+    return (
+      <Meja2Antrean
+        sessionVisits={sessionVisits}
+        anggotaById={anggotaById}
+        keluargaById={keluargaById}
+        activeSessionId={activeSessionId}
+        sesiAktif={sesiAktif}
+        multipleActive={multipleActive}
+        rolePrefix={rolePrefix}
+        jadwalUrl={jadwalUrl}
+        onMulaiUkur={(id) => navigate(`${rolePrefix}/meja2/${id}`)}
+      />
+    );
+  }
+
+  // ---- Blocked states (M2-003/M2-013/M2-024) ----
+  if (!activeSessionId || !sesiAktif) {
+    return (
+      <BlockedState
+        icon={<CalendarX2 className="w-12 h-12 text-gray-300 mx-auto" />}
+        title={multipleActive ? "Terdeteksi Lebih dari Satu Sesi Aktif" : "Belum Ada Sesi Posyandu Aktif"}
+        desc="Pengukuran hanya dapat dilakukan pada sesi aktif. Buka/rapikan sesi di halaman Jadwal Posyandu."
+        backTo={jadwalUrl}
+        backLabel="Buka Jadwal Posyandu"
+      />
+    );
+  }
+
+  if (kategoriRes && !kategoriRes.valid) {
+    return (
+      <BlockedState
+        icon={<User className="w-12 h-12 text-gray-300 mx-auto" />}
+        title="Kategori Peserta Tidak Valid"
+        desc={`${kategoriRes.reason || "Kategori tidak dikenal."} Perbaiki data peserta di Master Data; pengukuran diblokir agar tidak tercatat pada form yang salah.`}
+        backTo={`${rolePrefix}/meja2`}
+        backLabel="Kembali ke Antrean Meja 2"
+      />
+    );
+  }
+
+  if (!activeVisit) {
+    const sudahSelesai = Boolean(sessionHistoryVisit);
+    return (
+      <BlockedState
+        icon={
+          sudahSelesai ? (
+            <CheckCircle2 className="w-12 h-12 text-emerald-300 mx-auto" />
+          ) : (
+            <AlertTriangle className="w-12 h-12 text-amber-300 mx-auto" />
+          )
+        }
+        title={sudahSelesai ? "Kunjungan Sesi Ini Sudah Selesai" : "Peserta Belum Terdaftar di Meja 1"}
+        desc={
+          sudahSelesai
+            ? `${anggota.nama} sudah menyelesaikan alur pada sesi ini. Lihat rekapitulasi sesi untuk detailnya.`
+            : `${anggota.nama} belum check-in pada sesi ini. Lakukan pendaftaran kehadiran di Meja 1 terlebih dahulu — kunjungan tidak dibuat otomatis dari Meja 2.`
+        }
+        backTo={sudahSelesai ? `${rolePrefix}/rekap` : `${rolePrefix}/meja1`}
+        backLabel={sudahSelesai ? "Lihat Rekapitulasi" : "Buka Meja 1 Registrasi"}
+      />
+    );
+  }
+
+  // F-05: visit yang sudah melewati Meja 2 tidak bisa dibuka/diubah dari sini.
+  // Koreksi via alur reopen resmi (Bidan/Admin); lihat Rekapitulasi.
+  if (activeVisit && isVisitPastMejaStage(activeVisit, 2)) {
+    return (
+      <BlockedState
+        icon={<CheckCircle2 className="w-12 h-12 text-emerald-300 mx-auto" />}
+        title="Sudah Melewati Meja 2"
+        desc={`${anggota.nama} sudah berada di tahap ${labelStatusAlur(activeVisit.status_alur)} pada sesi ini. Pengukuran tidak dapat diubah dari Meja 2.`}
+        backTo={`${rolePrefix}/rekap`}
+        backLabel="Lihat Rekapitulasi"
+      />
+    );
+  }
+
+  if (!kategori) {
+    return (
+      <BlockedState
+        icon={<User className="w-12 h-12 text-gray-300 mx-auto" />}
+        title="Kategori Peserta Tidak Valid"
+        desc="Kategori peserta tidak dapat dipetakan ke form pengukuran."
+        backTo={`${rolePrefix}/meja2`}
+        backLabel="Kembali ke Antrean Meja 2"
+      />
+    );
   }
 
   const isUnderTwo = (usiaInfo?.totalBulan || 0) < 24;
 
   function set(field: string, value: string) {
     isDirtyRef.current = true;
+    setSubmitError(null);
+    setFieldErrors((prev) => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      if (field === "td_sistolik" || field === "td_diastolik") {
+        delete next.td_sistolik;
+        delete next.td_diastolik;
+      }
+      return next;
+    });
     setForm((f: any) => {
       const next = { ...f, [field]: value };
-      if (anggota?.id) {
+      if (draftKey && draftParts) {
         try {
-          sessionStorage.setItem(`sipandu_draft_meja2_${anggota.id}`, JSON.stringify(next));
+          sessionStorage.setItem(draftKey, JSON.stringify(packDraft(draftParts, next)));
         } catch {}
       }
       return next;
@@ -424,46 +525,84 @@ export default function Meja2() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (anggota?.id) {
-      try {
-        sessionStorage.removeItem(`sipandu_draft_meja2_${anggota.id}`);
-      } catch {}
+    // M2-006: cegah double submit (state + ref).
+    if (isSavingRef.current) return;
+
+    // M2-014/M2-015: validator domain sebelum request.
+    const validation = validatePengukuran(kategori as KategoriKanonis, form);
+    if (!validation.valid) {
+      setFieldErrors(validation.errors);
+      const msg = validation.firstError || "Periksa kembali isian form.";
+      setSubmitError(msg);
+      showToast(msg, "warning");
+      return;
     }
-    isDirtyRef.current = false;
+    setFieldErrors({});
+    setSubmitError(null);
 
-    const visit = data.kunjunganAktif.find((k: any) => k.anggota_id === anggota.id);
-    const visitId = visit?.id || `visit-${anggota.id}`;
-    const risikoStructured = risikoList.map((r: any, idx: number) => ({
-      id: r.id || `risiko::${visitId}::${r.kode || idx + 1}`,
-      kunjungan_id: visitId,
-      anggota_id: anggota.id,
-      kode: r.kode || `R-${idx + 1}`,
-      kode_risiko: r.kode || `R-${idx + 1}`,
-      judul: r.judul || "Risiko Terdeteksi",
-      deskripsi: r.deskripsi || r.judul || "Risiko Terdeteksi",
-      severity: r.severity || "warning",
-      tindakLanjut: r.tindakLanjut || "Konseling & Pantau Rutin",
-      tindak_lanjut: r.tindakLanjut || "Konseling & Pantau Rutin",
-      status: "aktif",
-    }));
+    const visit = activeVisit;
+    if (!visit) {
+      setSubmitError("Kunjungan sesi aktif tidak ditemukan. Kembali ke antrean.");
+      return;
+    }
 
-    const payload = {
-      ...form,
-      berat_badan: form.berat_badan ? parseFloat(form.berat_badan) : undefined,
-      tinggi_badan: form.tinggi_badan ? parseFloat(form.tinggi_badan) : undefined,
-      z_score_bbu: analysis?.z_bbu ?? null,
-      z_score_tbu: analysis?.z_tbu ?? null,
-      z_score_bbtb: analysis?.z_bbtb ?? null,
-      status_gizi: analysis?.status_bbu?.label ?? (form.status_gizi || "Normal"),
-      status_pertumbuhan: analysis?.statusPertumbuhan ?? "naik",
-      risiko: risikoStructured,
-    };
-    await updatePengukuran(anggota.id, payload);
-    showToast(`Pengukuran ${anggota.nama} tersimpan. Lanjut ke Meja 3.`, "success");
-    navigate(`${rolePrefix}/meja3/${anggota.id}`);
+    isSavingRef.current = true;
+    setIsSaving(true);
+    try {
+      const visitId = visit.id;
+      const risikoStructured = risikoList.map((r: any, idx: number) => ({
+        id: r.id || `risiko::${visitId}::${r.kode || idx + 1}`,
+        kunjungan_id: visitId,
+        anggota_id: anggota.id,
+        kode: r.kode || `R-${idx + 1}`,
+        kode_risiko: r.kode || `R-${idx + 1}`,
+        judul: r.judul || "Risiko Terdeteksi",
+        deskripsi: r.deskripsi || r.judul || "Risiko Terdeteksi",
+        severity: r.severity || "warning",
+        tindakLanjut: r.tindakLanjut || "Konseling & Pantau Rutin",
+        tindak_lanjut: r.tindakLanjut || "Konseling & Pantau Rutin",
+        status: "aktif",
+      }));
+
+      const payload = {
+        ...form,
+        anggota_id: anggota.id,
+        usia_saat_ukur: usiaInfo?.totalBulan ?? null,
+        berat_badan: form.berat_badan ? parseFloat(form.berat_badan) : undefined,
+        tinggi_badan: form.tinggi_badan ? parseFloat(form.tinggi_badan) : undefined,
+        z_score_bbu: analysis?.z_bbu ?? null,
+        z_score_tbu: analysis?.z_tbu ?? null,
+        z_score_bbtb: analysis?.z_bbtb ?? null,
+        status_gizi: analysis?.status_bbu?.label ?? (form.status_gizi || "Normal"),
+        // M2-010: tanpa baseline -> "data_baru", JANGAN "naik".
+        status_pertumbuhan: analysis?.statusPertumbuhan ?? "data_baru",
+        risiko: risikoStructured,
+      };
+      // M2-003: kunjunganId tervalidasi sesi aktif.
+      await updatePengukuran(anggota.id, payload, { kunjunganId: visitId });
+
+      // M2-005: draft dihapus HANYA setelah save sukses.
+      if (draftKey) {
+        try {
+          sessionStorage.removeItem(draftKey);
+        } catch {}
+      }
+      isDirtyRef.current = false;
+      showToast(`Pengukuran ${anggota.nama} tersimpan. Lanjut ke Meja 3.`, "success");
+      navigate(`${rolePrefix}/meja3/${anggota.id}`);
+    } catch (err: any) {
+      // M2-023: error -> draft tetap ada, tetap di halaman, tombol pulih.
+      const msg = err?.message || "Gagal menyimpan pengukuran. Draft Anda tetap tersimpan — coba lagi.";
+      setSubmitError(msg);
+      showToast(msg, "danger");
+    } finally {
+      isSavingRef.current = false;
+      setIsSaving(false);
+    }
   }
 
   const isSudahDiukur = Boolean(form.berat_badan || form.tinggi_badan);
+  const tdInvalid = Boolean(fieldErrors.td_sistolik || fieldErrors.td_diastolik);
 
   return (
     <div className="p-4 sm:p-8 space-y-6">
@@ -500,7 +639,7 @@ export default function Meja2() {
               {keluarga && (
                 <>
                   <span>·</span>
-                  <span>KK: {keluarga.kepala_keluarga} (RT {keluarga.rt || "-"})</span>
+                  <span>KK: {keluarga.kepala_keluarga || keluarga.nama_kepala_keluarga} (RT {keluarga.rt || "-"})</span>
                 </>
               )}
             </p>
@@ -517,6 +656,13 @@ export default function Meja2() {
           </Link>
         </div>
       </div>
+
+      {submitError && (
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold rounded-xl px-4 py-3 flex items-start gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>{submitError} Draft tetap tersimpan di perangkat ini.</span>
+        </div>
+      )}
 
       {/* 3. Balanced Responsive 12-Column Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -540,7 +686,7 @@ export default function Meja2() {
                 {isBumil && "Pemeriksaan fisik ibu hamil untuk skrining risiko kehamilan."}
                 {isLansia && "Pemeriksaan fisik & skrining Penyakit Tidak Menular (PTM) lansia."}
                 {isWus && "Pemeriksaan antropometri wanita usia subur & deteksi KEK."}
-                {isUmum && "Pemeriksaan fisik umum masyarakat."}
+                {kategori === "umum" && "Pemeriksaan fisik umum masyarakat."}
               </p>
             </div>
             <span className="text-[11px] font-semibold text-gray-500 bg-gray-50 px-2.5 py-1 rounded-lg border border-gray-100">
@@ -564,10 +710,11 @@ export default function Meja2() {
                       value={form.berat_badan || ""}
                       onChange={(e) => set("berat_badan", e.target.value)}
                       placeholder="Contoh: 12.5"
-                      className={inputCls}
+                      className={fieldErrors.berat_badan ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>kg</span>
                   </div>
+                  <FieldErr msg={fieldErrors.berat_badan} />
                 </div>
                 <div>
                   <label className={labelCls}>
@@ -583,10 +730,11 @@ export default function Meja2() {
                       value={form.tinggi_badan || ""}
                       onChange={(e) => set("tinggi_badan", e.target.value)}
                       placeholder={isUnderTwo ? "Contoh: 75.0" : "Contoh: 88.5"}
-                      className={inputCls}
+                      className={fieldErrors.tinggi_badan ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>cm</span>
                   </div>
+                  <FieldErr msg={fieldErrors.tinggi_badan} />
                 </div>
               </div>
 
@@ -602,10 +750,11 @@ export default function Meja2() {
                       value={form.lingkar_kepala || ""}
                       onChange={(e) => set("lingkar_kepala", e.target.value)}
                       placeholder="Contoh: 45.0"
-                      className={inputCls}
+                      className={fieldErrors.lingkar_kepala ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>cm</span>
                   </div>
+                  <FieldErr msg={fieldErrors.lingkar_kepala} />
                 </div>
                 <div>
                   <label className={labelCls}>Lingkar Lengan Atas (LILA cm)</label>
@@ -618,10 +767,11 @@ export default function Meja2() {
                       value={form.lingkar_lengan || ""}
                       onChange={(e) => set("lingkar_lengan", e.target.value)}
                       placeholder="Contoh: 14.5"
-                      className={inputCls}
+                      className={fieldErrors.lingkar_lengan ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>cm</span>
                   </div>
+                  <FieldErr msg={fieldErrors.lingkar_lengan} />
                 </div>
               </div>
 
@@ -640,7 +790,7 @@ export default function Meja2() {
           {/* Form Fields: Ibu Hamil */}
           {isBumil && (
             <div className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label className={labelCls}>Berat Badan Ibu (kg) *</label>
                   <div className={inputContainerCls}>
@@ -653,10 +803,28 @@ export default function Meja2() {
                       value={form.berat_badan || ""}
                       onChange={(e) => set("berat_badan", e.target.value)}
                       placeholder="Contoh: 60.0"
-                      className={inputCls}
+                      className={fieldErrors.berat_badan ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>kg</span>
                   </div>
+                  <FieldErr msg={fieldErrors.berat_badan} />
+                </div>
+                <div>
+                  <label className={labelCls}>Tinggi Badan (cm)</label>
+                  <div className={inputContainerCls}>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="100"
+                      max="200"
+                      value={form.tinggi_badan || ""}
+                      onChange={(e) => set("tinggi_badan", e.target.value)}
+                      placeholder="Contoh: 155.5"
+                      className={fieldErrors.tinggi_badan ? inputClsErr : inputCls}
+                    />
+                    <span className={inputUnitCls}>cm</span>
+                  </div>
+                  <FieldErr msg={fieldErrors.tinggi_badan} />
                 </div>
                 <div>
                   <label className={labelCls}>LILA (cm) *</label>
@@ -670,10 +838,11 @@ export default function Meja2() {
                       value={form.lingkar_lengan || ""}
                       onChange={(e) => set("lingkar_lengan", e.target.value)}
                       placeholder="Contoh: 24.5"
-                      className={inputCls}
+                      className={fieldErrors.lingkar_lengan ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>cm</span>
                   </div>
+                  <FieldErr msg={fieldErrors.lingkar_lengan} />
                 </div>
               </div>
 
@@ -689,7 +858,7 @@ export default function Meja2() {
                       value={form.td_sistolik || ""}
                       onChange={(e) => set("td_sistolik", e.target.value)}
                       placeholder="120"
-                      className={inputCls}
+                      className={tdInvalid ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>mmHg</span>
                   </div>
@@ -705,12 +874,13 @@ export default function Meja2() {
                       value={form.td_diastolik || ""}
                       onChange={(e) => set("td_diastolik", e.target.value)}
                       placeholder="80"
-                      className={inputCls}
+                      className={tdInvalid ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>mmHg</span>
                   </div>
                 </div>
               </div>
+              {tdInvalid && <FieldErr msg={fieldErrors.td_sistolik || fieldErrors.td_diastolik} />}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -724,10 +894,11 @@ export default function Meja2() {
                       value={form.tinggi_fundus || ""}
                       onChange={(e) => set("tinggi_fundus", e.target.value)}
                       placeholder="Contoh: 28.0"
-                      className={inputCls}
+                      className={fieldErrors.tinggi_fundus ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>cm</span>
                   </div>
+                  <FieldErr msg={fieldErrors.tinggi_fundus} />
                 </div>
                 <div>
                   <label className={labelCls}>Detak Jantung Janin (DJJ bpm)</label>
@@ -739,10 +910,11 @@ export default function Meja2() {
                       value={form.djj || ""}
                       onChange={(e) => set("djj", e.target.value)}
                       placeholder="Contoh: 140"
-                      className={inputCls}
+                      className={fieldErrors.djj ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>bpm</span>
                   </div>
+                  <FieldErr msg={fieldErrors.djj} />
                 </div>
               </div>
 
@@ -773,10 +945,11 @@ export default function Meja2() {
                       value={form.berat_badan || ""}
                       onChange={(e) => set("berat_badan", e.target.value)}
                       placeholder="65.0"
-                      className={inputCls}
+                      className={fieldErrors.berat_badan ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>kg</span>
                   </div>
+                  <FieldErr msg={fieldErrors.berat_badan} />
                 </div>
                 <div>
                   <label className={labelCls}>Tinggi Badan (cm)</label>
@@ -789,10 +962,11 @@ export default function Meja2() {
                       value={form.tinggi_badan || ""}
                       onChange={(e) => set("tinggi_badan", e.target.value)}
                       placeholder="160.0"
-                      className={inputCls}
+                      className={fieldErrors.tinggi_badan ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>cm</span>
                   </div>
+                  <FieldErr msg={fieldErrors.tinggi_badan} />
                 </div>
               </div>
 
@@ -808,7 +982,7 @@ export default function Meja2() {
                       value={form.td_sistolik || ""}
                       onChange={(e) => set("td_sistolik", e.target.value)}
                       placeholder="130"
-                      className={inputCls}
+                      className={tdInvalid ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>mmHg</span>
                   </div>
@@ -824,12 +998,13 @@ export default function Meja2() {
                       value={form.td_diastolik || ""}
                       onChange={(e) => set("td_diastolik", e.target.value)}
                       placeholder="85"
-                      className={inputCls}
+                      className={tdInvalid ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>mmHg</span>
                   </div>
                 </div>
               </div>
+              {tdInvalid && <FieldErr msg={fieldErrors.td_sistolik || fieldErrors.td_diastolik} />}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -842,10 +1017,11 @@ export default function Meja2() {
                       value={form.gula_darah_sewaktu || ""}
                       onChange={(e) => set("gula_darah_sewaktu", e.target.value)}
                       placeholder="110"
-                      className={inputCls}
+                      className={fieldErrors.gula_darah_sewaktu ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>mg/dL</span>
                   </div>
+                  <FieldErr msg={fieldErrors.gula_darah_sewaktu} />
                 </div>
                 <div>
                   <label className={labelCls}>Lingkar Perut (cm)</label>
@@ -858,10 +1034,11 @@ export default function Meja2() {
                       value={form.lingkar_perut || ""}
                       onChange={(e) => set("lingkar_perut", e.target.value)}
                       placeholder="85.0"
-                      className={inputCls}
+                      className={fieldErrors.lingkar_perut ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>cm</span>
                   </div>
+                  <FieldErr msg={fieldErrors.lingkar_perut} />
                 </div>
               </div>
             </div>
@@ -882,10 +1059,11 @@ export default function Meja2() {
                       value={form.berat_badan || ""}
                       onChange={(e) => set("berat_badan", e.target.value)}
                       placeholder="55.0"
-                      className={inputCls}
+                      className={fieldErrors.berat_badan ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>kg</span>
                   </div>
+                  <FieldErr msg={fieldErrors.berat_badan} />
                 </div>
                 <div>
                   <label className={labelCls}>Tinggi Badan (cm)</label>
@@ -898,10 +1076,11 @@ export default function Meja2() {
                       value={form.tinggi_badan || ""}
                       onChange={(e) => set("tinggi_badan", e.target.value)}
                       placeholder="158.0"
-                      className={inputCls}
+                      className={fieldErrors.tinggi_badan ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>cm</span>
                   </div>
+                  <FieldErr msg={fieldErrors.tinggi_badan} />
                 </div>
               </div>
 
@@ -916,10 +1095,11 @@ export default function Meja2() {
                     value={form.lingkar_lengan || ""}
                     onChange={(e) => set("lingkar_lengan", e.target.value)}
                     placeholder="24.5"
-                    className={inputCls}
+                    className={fieldErrors.lingkar_lengan ? inputClsErr : inputCls}
                   />
                   <span className={inputUnitCls}>cm</span>
                 </div>
+                <FieldErr msg={fieldErrors.lingkar_lengan} />
                 <p className="text-[11px] text-gray-500 mt-1">
                   Ambang batas risiko KEK WUS pra-nikah / prakonsepsi adalah &lt; 23.5 cm.
                 </p>
@@ -928,7 +1108,7 @@ export default function Meja2() {
           )}
 
           {/* Form Fields: Umum / Lainnya */}
-          {isUmum && (
+          {kategori === "umum" && (
             <div className="space-y-4">
               <p className="text-xs text-gray-600 bg-gray-50 border border-gray-100 rounded-xl px-3.5 py-2.5">
                 Kategori <span className="font-bold text-gray-800">Umum</span>: Pemeriksaan antropometri dasar dan skrining tekanan darah serta metabolisme.
@@ -947,10 +1127,11 @@ export default function Meja2() {
                       value={form.berat_badan || ""}
                       onChange={(e) => set("berat_badan", e.target.value)}
                       placeholder="60.0"
-                      className={inputCls}
+                      className={fieldErrors.berat_badan ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>kg</span>
                   </div>
+                  <FieldErr msg={fieldErrors.berat_badan} />
                 </div>
                 <div>
                   <label className={labelCls}>Tinggi Badan (cm) *</label>
@@ -964,10 +1145,11 @@ export default function Meja2() {
                       value={form.tinggi_badan || ""}
                       onChange={(e) => set("tinggi_badan", e.target.value)}
                       placeholder="160.0"
-                      className={inputCls}
+                      className={fieldErrors.tinggi_badan ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>cm</span>
                   </div>
+                  <FieldErr msg={fieldErrors.tinggi_badan} />
                 </div>
               </div>
 
@@ -982,7 +1164,7 @@ export default function Meja2() {
                       value={form.td_sistolik || ""}
                       onChange={(e) => set("td_sistolik", e.target.value)}
                       placeholder="120"
-                      className={inputCls}
+                      className={tdInvalid ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>mmHg</span>
                   </div>
@@ -997,12 +1179,13 @@ export default function Meja2() {
                       value={form.td_diastolik || ""}
                       onChange={(e) => set("td_diastolik", e.target.value)}
                       placeholder="80"
-                      className={inputCls}
+                      className={tdInvalid ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>mmHg</span>
                   </div>
                 </div>
               </div>
+              {tdInvalid && <FieldErr msg={fieldErrors.td_sistolik || fieldErrors.td_diastolik} />}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -1015,10 +1198,11 @@ export default function Meja2() {
                       value={form.gula_darah_sewaktu || ""}
                       onChange={(e) => set("gula_darah_sewaktu", e.target.value)}
                       placeholder="110"
-                      className={inputCls}
+                      className={fieldErrors.gula_darah_sewaktu ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>mg/dL</span>
                   </div>
+                  <FieldErr msg={fieldErrors.gula_darah_sewaktu} />
                 </div>
                 <div>
                   <label className={labelCls}>Lingkar Perut (cm)</label>
@@ -1031,10 +1215,11 @@ export default function Meja2() {
                       value={form.lingkar_perut || ""}
                       onChange={(e) => set("lingkar_perut", e.target.value)}
                       placeholder="85.0"
-                      className={inputCls}
+                      className={fieldErrors.lingkar_perut ? inputClsErr : inputCls}
                     />
                     <span className={inputUnitCls}>cm</span>
                   </div>
+                  <FieldErr msg={fieldErrors.lingkar_perut} />
                 </div>
               </div>
 
@@ -1061,349 +1246,30 @@ export default function Meja2() {
             </Link>
             <button
               type="submit"
-              className="w-full sm:w-auto px-6 py-2.5 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl text-xs shadow-md shadow-sky-600/20 transition flex items-center justify-center gap-2"
+              disabled={isSaving}
+              className="w-full sm:w-auto px-6 py-2.5 bg-sky-600 hover:bg-sky-700 disabled:bg-sky-300 disabled:cursor-not-allowed text-white font-bold rounded-xl text-xs shadow-md shadow-sky-600/20 transition flex items-center justify-center gap-2"
             >
-              <span>Simpan & Lanjut Meja 3</span>
-              <ArrowRight className="w-4 h-4" />
+              <span>{isSaving ? "Menyimpan…" : "Simpan & Lanjut Meja 3"}</span>
+              {!isSaving && <ArrowRight className="w-4 h-4" />}
             </button>
           </div>
         </form>
 
         {/* Right Column: Live Analysis, Riwayat & Deteksi Risiko (5 cols) */}
         <div className="lg:col-span-5 space-y-6">
-          {/* Card 1: Hasil Analisis & Status Klinis Live */}
-          <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-4">
-            <div className="border-b border-gray-100 pb-3 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-sky-50 text-sky-600 rounded-lg">
-                  <Activity className="w-4 h-4" />
-                </div>
-                <h3 className="font-bold text-gray-900 text-sm">
-                  {isAnak ? "Hasil Analisis Z-Score WHO" : "Status & Parameter Klinis"}
-                </h3>
-              </div>
-              <span className="text-[10px] font-bold text-sky-700 bg-sky-50 px-2 py-0.5 rounded-full">
-                Live Preview
-              </span>
-            </div>
-
-            {/* Balita Z-Score Content */}
-            {isAnak && (
-              <>
-                {analysis ? (
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-3 gap-2.5 text-center text-xs">
-                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-100">
-                        <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                          BB/U
-                        </p>
-                        <p className="text-xl font-extrabold text-slate-900 mt-0.5">
-                          {analysis.z_bbu?.toFixed(2) ?? "—"}
-                        </p>
-                        <span
-                          className={`mt-1.5 inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${analysis.status_bbu.badge}`}
-                        >
-                          {analysis.status_bbu.label}
-                        </span>
-                      </div>
-
-                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-100">
-                        <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                          TB/U
-                        </p>
-                        <p className="text-xl font-extrabold text-slate-900 mt-0.5">
-                          {analysis.z_tbu?.toFixed(2) ?? "—"}
-                        </p>
-                        <span
-                          className={`mt-1.5 inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${analysis.status_tbu.badge}`}
-                        >
-                          {analysis.status_tbu.label}
-                        </span>
-                      </div>
-
-                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-100">
-                        <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                          BB/TB
-                        </p>
-                        <p className="text-xl font-extrabold text-slate-900 mt-0.5">
-                          {analysis.z_bbtb?.toFixed(2) ?? "—"}
-                        </p>
-                        <span
-                          className={`mt-1.5 inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${analysis.status_bbtb.badge}`}
-                        >
-                          {analysis.status_bbtb.label}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="p-3.5 rounded-xl bg-slate-50/80 border border-slate-100 text-xs flex items-center justify-between">
-                      <div>
-                        <span className="text-slate-500 text-[11px] block">
-                          Pertumbuhan vs Bulan Lalu:
-                        </span>
-                        <span className="font-bold text-slate-900 text-sm">
-                          {analysis.selisihBB >= 0 ? "+" : ""}
-                          {analysis.selisihBB.toFixed(2)} kg
-                        </span>
-                        {lastWeight && (
-                          <span className="text-[11px] text-slate-500 ml-1.5">
-                            (dari {lastWeight} kg)
-                          </span>
-                        )}
-                      </div>
-                      <span
-                        className={`px-3 py-1 rounded-full text-xs font-bold ${
-                          analysis.statusPertumbuhan === "naik"
-                            ? "bg-emerald-100 text-emerald-800"
-                            : "bg-rose-100 text-rose-800"
-                        }`}
-                      >
-                        {analysis.statusPertumbuhan === "naik" ? "Naik (N) ✅" : "Tidak Naik (T) ⚠️"}
-                      </span>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="py-8 text-center text-xs text-gray-500 space-y-2">
-                    <Baby className="w-8 h-8 text-gray-300 mx-auto" />
-                    <p className="font-semibold text-gray-700">Kalkulasi Z-Score WHO Otomatis</p>
-                    <p className="text-gray-400 max-w-xs mx-auto text-[11px]">
-                      Masukkan Berat Badan dan Panjang/Tinggi Badan untuk melihat Z-score status gizi balita secara live.
-                    </p>
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* Bumil Clinical Content */}
-            {isBumil && (
-              <div className="space-y-3">
-                {bumilAnalysis && (bumilAnalysis.lilaStatus || bumilAnalysis.tdStatus || bumilAnalysis.djjStatus) ? (
-                  <div className="space-y-2.5">
-                    {bumilAnalysis.lilaStatus && (
-                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-between text-xs">
-                        <span className="text-slate-600 font-medium">Status LILA:</span>
-                        <span className={`px-2.5 py-0.5 rounded-full font-bold text-[11px] border ${bumilAnalysis.lilaStatus.badge}`}>
-                          {bumilAnalysis.lilaStatus.label}
-                        </span>
-                      </div>
-                    )}
-
-                    {bumilAnalysis.tdStatus && (
-                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-between text-xs">
-                        <span className="text-slate-600 font-medium">Tekanan Darah:</span>
-                        <span className={`px-2.5 py-0.5 rounded-full font-bold text-[11px] border ${bumilAnalysis.tdStatus.badge}`}>
-                          {form.td_sistolik}/{form.td_diastolik} · {bumilAnalysis.tdStatus.label}
-                        </span>
-                      </div>
-                    )}
-
-                    {bumilAnalysis.djjStatus && (
-                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-between text-xs">
-                        <span className="text-slate-600 font-medium">Detak Jantung Janin:</span>
-                        <span className={`px-2.5 py-0.5 rounded-full font-bold text-[11px] border ${bumilAnalysis.djjStatus.badge}`}>
-                          {form.djj} bpm · {bumilAnalysis.djjStatus.label}
-                        </span>
-                      </div>
-                    )}
-
-                    {bumilAnalysis.hphtInfo && (
-                      <div className="p-3 rounded-xl bg-pink-50/60 border border-pink-100 text-xs text-pink-900 flex items-center justify-between">
-                        <span>Perkiraan Lahir (HPL):</span>
-                        <span className="font-bold">{bumilAnalysis.hphtInfo.hplFormatted} ({bumilAnalysis.hphtInfo.usiaMinggu} Minggu)</span>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="py-8 text-center text-xs text-gray-500 space-y-2">
-                    <HeartPulse className="w-8 h-8 text-rose-300 mx-auto" />
-                    <p className="font-semibold text-gray-700">Pemantauan Khusus Ibu Hamil</p>
-                    <p className="text-gray-400 max-w-xs mx-auto text-[11px]">
-                      Isi LILA dan Tekanan Darah untuk mendeteksi risiko KEK dan hipertensi kehamilan secara otomatis.
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Lansia / WUS / Umum Content */}
-            {!isAnak && !isBumil && (
-              <div className="space-y-3">
-                {imt || tensiAnalysis || gdsAnalysis ? (
-                  <div className="space-y-2.5">
-                    {imt && (
-                      <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-100 text-center">
-                        <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                          Indeks Massa Tubuh (IMT)
-                        </p>
-                        <p className="text-2xl font-extrabold text-slate-900 mt-0.5">
-                          {imt.value.toFixed(1)}
-                        </p>
-                        <span className={`mt-1 inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${imt.badge}`}>
-                          {imt.label}
-                        </span>
-                      </div>
-                    )}
-
-                    {tensiAnalysis && (
-                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-between text-xs">
-                        <span className="text-slate-600 font-medium">Tekanan Darah:</span>
-                        <span className={`px-2.5 py-0.5 rounded-full font-bold text-[11px] border ${tensiAnalysis.badge}`}>
-                          {form.td_sistolik}/{form.td_diastolik} · {tensiAnalysis.label}
-                        </span>
-                      </div>
-                    )}
-
-                    {gdsAnalysis && (
-                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-between text-xs">
-                        <span className="text-slate-600 font-medium">Gula Darah (GDS):</span>
-                        <span className={`px-2.5 py-0.5 rounded-full font-bold text-[11px] border ${gdsAnalysis.badge}`}>
-                          {form.gula_darah_sewaktu} mg/dL · {gdsAnalysis.label}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="py-8 text-center text-xs text-gray-500 space-y-2">
-                    <Activity className="w-8 h-8 text-gray-300 mx-auto" />
-                    <p className="font-semibold text-gray-700">Analisis Kesehatan Posyandu</p>
-                    <p className="text-gray-400 max-w-xs mx-auto text-[11px]">
-                      Masukkan data antropometri dan tanda vital untuk memantau status gizi dan skrining PTM.
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Card 2: Riwayat Pengukuran Sebelumnya (PRD 34.4) */}
-          <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-3">
-            <div className="border-b border-gray-100 pb-3 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-amber-50 text-amber-600 rounded-lg">
-                  <History className="w-4 h-4" />
-                </div>
-                <h3 className="font-bold text-gray-900 text-sm">
-                  Riwayat Pengukuran Terakhir
-                </h3>
-              </div>
-              <span className="text-[10px] text-gray-500 font-medium">
-                KMS & Kunjungan Lalu
-              </span>
-            </div>
-
-            {riwayatKunjungan.length > 0 ? (
-              <div className="space-y-2">
-                {riwayatKunjungan.map((rk: any, i: number) => {
-                  const p = rk.pengukuran || {};
-                  return (
-                    <div
-                      key={rk.id || i}
-                      className="p-3 rounded-xl bg-gray-50/70 border border-gray-100 text-xs flex items-center justify-between"
-                    >
-                      <div>
-                        <p className="font-bold text-gray-800">
-                          {new Date(rk.waktu_hadir).toLocaleDateString("id-ID", {
-                            day: "numeric",
-                            month: "short",
-                            year: "numeric",
-                          })}
-                        </p>
-                        <p className="text-[11px] text-gray-500 mt-0.5">
-                          {p.berat_badan ? `BB: ${p.berat_badan} kg` : ""}
-                          {p.tinggi_badan ? ` · TB: ${p.tinggi_badan} cm` : ""}
-                          {p.lingkar_lengan_atas ? ` · LILA: ${p.lingkar_lengan_atas} cm` : ""}
-                          {p.td_sistolik ? ` · TD: ${p.td_sistolik}/${p.td_diastolik}` : ""}
-                        </p>
-                      </div>
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-white border border-gray-200 text-gray-700">
-                        {p.status_gizi || "Tercatat"}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="py-4 text-center text-xs text-gray-500">
-                <p className="text-gray-400 text-[11px]">
-                  Kunjungan pertama pada periode ini. Belum ada catatan pengukuran terdahulu.
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* Card 3: Deteksi Risiko Klinis Otomatis (Live) */}
-          <div
-            className={`p-6 rounded-2xl border shadow-sm space-y-3 transition ${
-              risikoList.length > 0
-                ? "bg-rose-50/40 border-rose-200"
-                : "bg-white border-gray-100"
-            }`}
-          >
-            <div className="flex items-center justify-between border-b border-gray-100/80 pb-3">
-              <div className="flex items-center gap-2">
-                <div
-                  className={`p-1.5 rounded-lg ${
-                    risikoList.length > 0
-                      ? "bg-rose-100 text-rose-700"
-                      : "bg-emerald-50 text-emerald-600"
-                  }`}
-                >
-                  <AlertTriangle className="w-4 h-4" />
-                </div>
-                <h3
-                  className={`font-bold text-sm ${
-                    risikoList.length > 0 ? "text-rose-900" : "text-gray-900"
-                  }`}
-                >
-                  Deteksi Risiko Klinis
-                </h3>
-              </div>
-              <span
-                className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                  risikoList.length > 0
-                    ? "bg-rose-200 text-rose-800"
-                    : "bg-emerald-100 text-emerald-800"
-                }`}
-              >
-                {risikoList.length > 0 ? `${risikoList.length} Terdeteksi` : "Aman / Normal"}
-              </span>
-            </div>
-
-            {risikoList.length > 0 ? (
-              <div className="space-y-2.5">
-                {risikoList.map((r) => (
-                  <div
-                    key={r.kode}
-                    className={`p-3 rounded-xl border text-xs ${
-                      r.severity === "danger"
-                        ? "bg-rose-100/70 border-rose-300 text-rose-950"
-                        : r.severity === "warning"
-                          ? "bg-amber-100/70 border-amber-300 text-amber-950"
-                          : "bg-sky-100/70 border-sky-300 text-sky-950"
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5 font-bold">
-                      <span className="px-1.5 py-0.5 rounded bg-white/70 text-[10px]">
-                        {r.kode}
-                      </span>
-                      <span>{r.judul}</span>
-                    </div>
-                    <p className="mt-1 leading-relaxed text-[11px] opacity-90">{r.deskripsi}</p>
-                    <p className="mt-1.5 font-semibold text-[11px] pt-1 border-t border-black/5">
-                      Tindak Lanjut: {r.tindakLanjut}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="py-2 text-center text-xs text-gray-500 flex items-center justify-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
-                <span className="text-gray-600 text-[11px]">
-                  Tidak ada anomali atau risiko klinis terdeteksi pada parameter yang dimasukkan.
-                </span>
-              </div>
-            )}
-          </div>
+          <Meja2AnalysisCard
+            isAnak={isAnak}
+            isBumil={isBumil}
+            analysis={analysis}
+            bumilAnalysis={bumilAnalysis}
+            imt={imt}
+            tensiAnalysis={tensiAnalysis}
+            gdsAnalysis={gdsAnalysis}
+            form={form}
+            lastWeight={lastWeight}
+          />
+          <Meja2HistoryCard riwayat={riwayatKunjungan} />
+          <Meja2RiskCard risikoList={risikoList} visitId={activeVisit.id} />
         </div>
       </div>
     </div>

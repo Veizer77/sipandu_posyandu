@@ -1,0 +1,246 @@
+/* SIPANDU - Gaya cetak terisolasi (A4 portrait).
+ * Pola: dokumen cetak dirender di portal body (.print-doc, hidden di layar).
+ * Tombol cetak menandai body[data-print-target], lalu window.print().
+ * Hanya portal target yang tampil; seluruh UI aplikasi disembunyikan.
+ */
+
+@media screen {
+  .print-doc {
+    display: none !important;
+  }
+}
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 13mm 12mm 14mm 12mm;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Sembunyikan seluruh aplikasi saat mode cetak terisolasi aktif. */
+  body[data-print-target] #root {
+    display: none !important;
+  }
+
+  .print-doc {
+    display: none;
+  }
+
+  body[data-print-target="laporan-l01"] #print-doc-laporan-l01,
+  body[data-print-target="laporan-l08"] #print-doc-laporan-l08,
+  body[data-print-target="rekap-berita"] #print-doc-rekap-berita {
+    display: block !important;
+  }
+
+  .print-sheet {
+    font-family: "Inter", Arial, Helvetica, sans-serif;
+    font-size: 10pt;
+    line-height: 1.45;
+    color: #000000;
+    background: #ffffff;
+    width: 100%;
+  }
+
+  .print-sheet * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .print-kop {
+    border-bottom: 3px double #000000;
+    padding-bottom: 10px;
+    margin-bottom: 14px;
+    break-inside: avoid;
+  }
+
+  .print-kop-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-height: 72px;
+  }
+
+  .print-logo {
+    width: 62px;
+    height: auto;
+    flex-shrink: 0;
+  }
+
+  .print-kop-text {
+    flex: 1;
+    text-align: center;
+  }
+
+  .print-kop-line1 {
+    font-size: 11pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 0;
+  }
+
+  .print-kop-line2 {
+    font-size: 12pt;
+    font-weight: 800;
+    text-transform: uppercase;
+    margin: 0;
+  }
+
+  .print-kop-line3 {
+    font-size: 14pt;
+    font-weight: 900;
+    text-transform: uppercase;
+    color: #166534;
+    margin: 0;
+  }
+
+  .print-kop-addr {
+    font-size: 8pt;
+    color: #333333;
+    margin: 2px 0 0 0;
+  }
+
+  .print-doc-title {
+    text-align: center;
+    margin: 10px 0 8px 0;
+    break-inside: avoid;
+    break-after: avoid;
+  }
+
+  .print-doc-title h2 {
+    font-size: 12pt;
+    font-weight: 800;
+    text-transform: uppercase;
+    text-decoration: underline;
+    margin: 0;
+  }
+
+  .print-doc-code {
+    font-size: 8.5pt;
+    color: #333333;
+    margin: 2px 0 0 0;
+  }
+
+  .print-meta {
+    width: 100%;
+    border: none !important;
+    margin: 0 0 10px 0;
+    font-size: 9.5pt;
+  }
+
+  .print-meta td {
+    border: none !important;
+    padding: 1px 4px !important;
+    vertical-align: top;
+  }
+
+  .print-meta-label {
+    width: 32%;
+    font-weight: 700;
+  }
+
+  .print-meta-sep {
+    width: 12px;
+  }
+
+  .print-section {
+    margin-bottom: 14px;
+    break-inside: auto;
+  }
+
+  .print-section > h4 {
+    font-size: 10pt;
+    font-weight: 800;
+    text-transform: uppercase;
+    margin: 0 0 6px 0;
+    break-after: avoid;
+  }
+
+  .print-sheet table.print-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0;
+  }
+
+  .print-table thead {
+    display: table-header-group;
+  }
+
+  .print-table th,
+  .print-table td {
+    border: 1px solid #334155 !important;
+    padding: 5px 7px !important;
+    font-size: 9pt;
+    color: #000000 !important;
+    vertical-align: top;
+  }
+
+  .print-table thead th {
+    background: #f1f5f9 !important;
+    font-weight: 800;
+  }
+
+  .print-table tbody tr {
+    break-inside: avoid;
+  }
+
+  .print-table tfoot td {
+    font-weight: 800;
+    background: #f8fafc !important;
+  }
+
+  .print-note {
+    font-size: 8.5pt;
+    font-style: italic;
+    color: #333333;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin: 0;
+    break-inside: avoid;
+  }
+
+  .print-signatures {
+    display: flex;
+    justify-content: space-between;
+    gap: 32px;
+    margin-top: 28px;
+    text-align: center;
+    font-size: 9.5pt;
+    break-inside: avoid;
+  }
+
+  .print-sign-col {
+    flex: 1;
+  }
+
+  .print-sign-col p {
+    margin: 0;
+  }
+
+  .print-sign-name {
+    font-weight: 800;
+    margin-top: 52px !important;
+    border-top: 1px solid #000000;
+    padding-top: 4px;
+  }
+
+  .print-sign-note {
+    font-size: 8.5pt;
+    color: #333333;
+  }
+
+  .print-footer {
+    margin-top: 16px;
+    font-size: 7.5pt;
+    color: #555555;
+    text-align: center;
+    break-inside: avoid;
+  }
+}

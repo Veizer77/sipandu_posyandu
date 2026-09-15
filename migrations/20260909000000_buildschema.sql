@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS penyuluhan (
   created_by       UUID REFERENCES users(id),
   created_at       TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE penyuluhan ADD COLUMN IF NOT EXISTS jadwal_id UUID REFERENCES jadwal_posyandu(id);
 CREATE INDEX IF NOT EXISTS idx_penyuluhan_jadwal ON penyuluhan(jadwal_id);
 
 -- 6) Kolom tambahan pelayanan (PRD F-06 item bumil/lansia/WUS)

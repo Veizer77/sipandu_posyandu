@@ -4,6 +4,45 @@
  * Tanpa fallback dummy/mock.
  */
 import { insforge, insforgeConfigured } from "@/lib/insforge";
+import { canonicalizePengukuranForm } from "@/lib/meja2Logic";
+import { validatePencatatan, isVersionConflict, toCatatanFormFields } from "@/lib/meja3Logic";
+import { normalizePelayanan, validatePelayanan, toDbPelayananRow, toPelayananFormFields } from "@/lib/meja4Logic";
+import {
+  validatePenyuluhan as validatePenyuluhanInput,
+  toDbPenyuluhanRow,
+  fromDbPenyuluhan,
+  canManagePenyuluhan,
+} from "@/lib/meja5Logic";
+
+// ===== Normalisasi nilai enum (kolom DB bertipe enum; label UI menimbulkan 22P02) =====
+// status_gizi_enum: buruk | kurang | normal | lebih | obesitas
+export function normalisasiStatusGizi(v: any): "buruk" | "kurang" | "normal" | "lebih" | "obesitas" {
+  const s = String(v ?? "").toLowerCase();
+  if (s.includes("buruk") || s.includes("severely") || s.includes("sangat pendek") || s.includes("sangat kurang")) return "buruk";
+  if (s.includes("kurang") || s.includes("wasted") || s.includes("underweight") || s.includes("pendek")) return "kurang";
+  if (s.includes("obes")) return "obesitas";
+  if (s.includes("lebih") || s.includes("overweight") || s.includes("berisiko")) return "lebih";
+  return "normal"; // "Gizi Baik (Normal)", "Normal", "—", kosong/tak dikenal
+}
+
+// status_pertumbuhan: naik | tidak_naik | turun | data_baru (M2-010)
+// "data_baru"/null dipertahankan eksplisit — jangan klaim "naik" tanpa baseline.
+// Kolom DB menerima data_baru setelah migrasi 20260912000001 (sebelumnya fallback null).
+export function normalisasiStatusPertumbuhan(v: any): "naik" | "tidak_naik" | "turun" | "data_baru" | null {
+  if (v === null || v === undefined || v === "") return null;
+  const s = String(v).toLowerCase();
+  if (s === "data_baru" || s.includes("data baru") || s.includes("kunjungan pertama")) return "data_baru";
+  if (s === "t" || s === "o" || s === "b" || s.includes("tidak") || s.includes("tetap") || s.includes("stagnan")) return "tidak_naik";
+  if (s === "turun" || (s.includes("turun") && !s.includes("tidak"))) return "turun";
+  if (s === "naik" || s === "n" || s.includes("naik")) return "naik";
+  return null;
+}
+
+export function parseNumberOrNull(v: any): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 
 export const dbService = {
   isConfigured(): boolean {
@@ -11,14 +50,26 @@ export const dbService = {
   },
 
   // ================= POSYANDU & ORGANISASI =================
+  /**
+   * Profil posyandu aktif. Deterministik:
+   * - Prioritas baris dengan id kanonis POSYANDU_ID (a0000000-...-0001),
+   *   lalu fallback ke RW "06" (Flamboyan RW 06), baru baris apa pun.
+   * - TIDAK memakai maybeSingle() karena tabel dapat berisi >1 baris
+   *   (mis. data RW lain) → maybeSingle() akan error PGRST116.
+   */
   async getPosyandu() {
     const { data, error } = await insforge.database
       .from("posyandu")
       .select("*")
-      .limit(1)
-      .maybeSingle();
+      .order("created_at", { ascending: true });
     if (error) throw error;
-    return data;
+    const rows = Array.isArray(data) ? data : data ? [data] : [];
+    if (rows.length === 0) return null;
+    return (
+      rows.find((r: any) => r.id === "a0000000-0000-0000-0000-000000000001") ||
+      rows.find((r: any) => String(r.rw) === "06") ||
+      rows[0]
+    );
   },
 
   async getOrganisasi() {
@@ -137,6 +188,7 @@ export const dbService = {
     tema?: string;
     status?: string;
     posyandu_id?: string;
+    sasaran?: string[];
   }) {
     const { data, error } = await insforge.database
       .from("jadwal_posyandu")
@@ -146,6 +198,7 @@ export const dbService = {
         tema: jadwal.tema || "Posyandu Rutin",
         status: jadwal.status || "aktif",
         posyandu_id: jadwal.posyandu_id || "a0000000-0000-0000-0000-000000000001",
+        sasaran: jadwal.sasaran || [],
       }])
       .select("*")
       .single();
@@ -235,27 +288,39 @@ export const dbService = {
         ...v,
         pengukuran: p ? {
           ...p,
-          berat_badan: p.berat_badan ? Number(p.berat_badan) : undefined,
-          tinggi_badan: p.tinggi_badan ? Number(p.tinggi_badan) : undefined,
-          lingkar_kepala: p.lingkar_kepala ? Number(p.lingkar_kepala) : undefined,
-          lingkar_lengan: p.lingkar_lengan ? Number(p.lingkar_lengan) : undefined,
-          z_score_bbu: p.z_score_bbu ? Number(p.z_score_bbu) : undefined,
-          z_score_tbu: p.z_score_tbu ? Number(p.z_score_tbu) : undefined,
-          z_score_bbtb: p.z_score_bbtb ? Number(p.z_score_bbtb) : undefined,
+          // M2-027: round-trip penuh form <-> DB dengan key kanonis form.
+          berat_badan: p.berat_badan != null ? Number(p.berat_badan) : undefined,
+          tinggi_badan: p.tinggi_badan != null ? Number(p.tinggi_badan) : undefined,
+          panjang_badan: p.panjang_badan != null ? Number(p.panjang_badan) : undefined,
+          lingkar_kepala: p.lingkar_kepala != null ? Number(p.lingkar_kepala) : undefined,
+          lingkar_lengan: p.lingkar_lengan != null ? Number(p.lingkar_lengan) : undefined,
+          lingkar_lengan_atas: p.lingkar_lengan != null ? Number(p.lingkar_lengan) : undefined,
+          lingkar_perut: p.lingkar_perut != null ? Number(p.lingkar_perut) : undefined,
+          td_sistolik: p.tekanan_darah_sistol != null ? Number(p.tekanan_darah_sistol) : undefined,
+          td_diastolik: p.tekanan_darah_diastol != null ? Number(p.tekanan_darah_diastol) : undefined,
+          gula_darah_sewaktu: p.gula_darah != null ? Number(p.gula_darah) : undefined,
+          tinggi_fundus: p.tinggi_fundus != null ? Number(p.tinggi_fundus) : undefined,
+          djj: p.djj != null ? Number(p.djj) : undefined,
+          imt: p.imt != null ? Number(p.imt) : undefined,
+          usia_saat_ukur: p.usia_saat_ukur != null ? Number(p.usia_saat_ukur) : undefined,
+          catatan: p.catatan ?? undefined,
+          z_score_bbu: p.z_score_bbu != null ? Number(p.z_score_bbu) : undefined,
+          z_score_tbu: p.z_score_tbu != null ? Number(p.z_score_tbu) : undefined,
+          z_score_bbtb: p.z_score_bbtb != null ? Number(p.z_score_bbtb) : undefined,
         } : {},
-        pelayanan: s || {},
-        catatan: n ? {
-          keluhan: n.keluhan || "",
-          temuan: n.temuan || "",
-          catatan_kader: n.catatan_kader || "",
-          catatan_bidan: n.catatan_bidan || "",
-        } : {},
+        // M4-003/M4-026: canonical DTO (tujuan/alasan rujukan, imunisasi[], TT) + versi.
+        pelayanan: toPelayananFormFields(s),
+        // M3-018: round-trip penuh termasuk created_at/updated_at (versi M3-015).
+        catatan: n ? toCatatanFormFields(n) : {},
         risiko: rByVisit.get(v.id) || [],
       };
     });
   },
 
   async checkIn(anggotaId: string, jadwalPosyanduId: string) {
+    if (!jadwalPosyanduId) {
+      throw new Error("jadwalPosyanduId wajib diisi (check-in hanya pada sesi aktif)");
+    }
     // Check if already checked in for this session
     const { data: existing } = await insforge.database
       .from("kunjungan")
@@ -275,7 +340,7 @@ export const dbService = {
         anggota_id: anggotaId,
         waktu_hadir: new Date().toISOString(),
         status_verifikasi: "draft",
-        status_alur: "meja_2_pengukuran",
+        status_alur: "meja_1_registrasi",
       }])
       .select("*")
       .single();
@@ -294,67 +359,308 @@ export const dbService = {
     return { visit: data, already: false };
   },
 
+  /**
+   * M2-004 — Guard server-side sebelum mutasi pengukuran.
+   * Visit harus: ada, belum selesai, belum terkunci (valid), dan sesinya aktif.
+   * Ini validasi terhadap DB live (bukan state lokal) agar cross-session /
+   * cross-tenant mutation ditolak walaupun pemanggil memalsukan ID.
+   */
+  async assertVisitWritable(kunjunganId: string) {
+    if (!kunjunganId) throw new Error("kunjunganId wajib diisi.");
+    const { data: visit, error } = await insforge.database
+      .from("kunjungan")
+      .select("id, anggota_id, jadwal_posyandu_id, status_alur, status_verifikasi")
+      .eq("id", kunjunganId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!visit) throw new Error("Kunjungan tidak ditemukan di database.");
+    if (visit.status_alur === "selesai") {
+      throw new Error("Kunjungan sudah selesai; pengukuran ditolak.");
+    }
+    if (visit.status_verifikasi === "valid") {
+      throw new Error("Kunjungan sudah tervalidasi Bidan dan terkunci.");
+    }
+    if (visit.jadwal_posyandu_id) {
+      const { data: jadwal, error: jErr } = await insforge.database
+        .from("jadwal_posyandu")
+        .select("id, status")
+        .eq("id", visit.jadwal_posyandu_id)
+        .maybeSingle();
+      if (jErr) throw jErr;
+      // M3-003: sesi rujukan tidak ada = data korup/lintas sumber → tolak.
+      if (!jadwal) {
+        throw new Error("Sesi posyandu kunjungan ini tidak valid; mutasi ditolak.");
+      }
+      if (jadwal.status && jadwal.status !== "aktif") {
+        throw new Error(`Sesi posyandu berstatus "${jadwal.status}"; mutasi hanya pada sesi aktif.`);
+      }
+    }
+    return visit;
+  },
+
   async savePengukuran(kunjunganId: string, payload: any) {
-    // Check if record exists
-    const { data: existing } = await insforge.database
+    // M2-004: tolak mutasi cross-session / sesi selesai / visit terkunci.
+    const visit = await this.assertVisitWritable(kunjunganId);
+    if (payload?.anggota_id && visit.anggota_id && payload.anggota_id !== visit.anggota_id) {
+      throw new Error("Kunjungan bukan milik peserta ini; mutasi ditolak.");
+    }
+
+    // M2-026: kanonikalisasi alias field di boundary sebelum persist.
+    const p = canonicalizePengukuranForm(payload || {});
+
+    // Cek record existing dengan limit(1) — maybeSingle() error PGRST116 bila ada duplikat
+    // dan membuat setiap save berikutnya selalu INSERT baris baru (loop duplikasi).
+    const { data: existingRows } = await insforge.database
       .from("pengukuran")
       .select("id")
       .eq("kunjungan_id", kunjunganId)
-      .maybeSingle();
+      .order("created_at", { ascending: false })
+      .limit(1);
+    const existing = existingRows && existingRows.length > 0 ? existingRows[0] : null;
 
-    const row = {
+    const bb = parseNumberOrNull(p.berat_badan);
+    const tb = parseNumberOrNull(p.tinggi_badan);
+    const usiaUkur = parseNumberOrNull(p.usia_saat_ukur);
+    // IMT dihitung server-side agar round-trip (M2-027).
+    const imt =
+      parseNumberOrNull(p.imt) ??
+      (bb !== null && tb !== null && tb > 0 ? Number((bb / Math.pow(tb / 100, 2)).toFixed(2)) : null);
+
+    const row: Record<string, any> = {
       kunjungan_id: kunjunganId,
-      berat_badan: payload.berat_badan != null ? payload.berat_badan : null,
-      tinggi_badan: payload.tinggi_badan != null ? payload.tinggi_badan : null,
-      lingkar_kepala: payload.lingkar_kepala != null ? payload.lingkar_kepala : null,
-      lingkar_lengan: payload.lingkar_lengan != null ? payload.lingkar_lengan : null,
-      tekanan_darah_sistol: payload.td_sistolik ? parseInt(payload.td_sistolik) : null,
-      tekanan_darah_diastol: payload.td_diastolik ? parseInt(payload.td_diastolik) : null,
-      gula_darah: payload.gula_darah_sewaktu ? parseFloat(payload.gula_darah_sewaktu) : null,
-      z_score_bbu: payload.z_score_bbu != null ? payload.z_score_bbu : null,
-      z_score_tbu: payload.z_score_tbu != null ? payload.z_score_tbu : null,
-      z_score_bbtb: payload.z_score_bbtb != null ? payload.z_score_bbtb : null,
-      status_gizi: payload.status_gizi || "normal",
-      status_pertumbuhan: payload.status_pertumbuhan || "naik",
+      berat_badan: bb,
+      tinggi_badan: tb,
+      // <24 bulan diukur PB (infantometer); simpan juga ke panjang_badan bila tersedia.
+      panjang_badan: parseNumberOrNull(p.panjang_badan) ?? (usiaUkur !== null && usiaUkur < 24 ? tb : null),
+      lingkar_kepala: parseNumberOrNull(p.lingkar_kepala),
+      lingkar_lengan: parseNumberOrNull(p.lingkar_lengan),
+      lingkar_perut: parseNumberOrNull(p.lingkar_perut),
+      tekanan_darah_sistol: parseNumberOrNull(p.td_sistolik),
+      tekanan_darah_diastol: parseNumberOrNull(p.td_diastolik),
+      gula_darah: parseNumberOrNull(p.gula_darah_sewaktu),
+      kolesterol: parseNumberOrNull(p.kolesterol),
+      asam_urat: parseNumberOrNull(p.asam_urat),
+      tinggi_fundus: parseNumberOrNull(p.tinggi_fundus),
+      djj: parseNumberOrNull(p.djj),
+      usia_saat_ukur: usiaUkur,
+      imt,
+      z_score_bbu: parseNumberOrNull(p.z_score_bbu),
+      z_score_tbu: parseNumberOrNull(p.z_score_tbu),
+      z_score_bbtb: parseNumberOrNull(p.z_score_bbtb),
+      status_gizi: normalisasiStatusGizi(p.status_gizi),
+      // M2-010: data_baru/null dipertahankan; tidak dipaksa "naik".
+      status_pertumbuhan: normalisasiStatusPertumbuhan(p.status_pertumbuhan),
+      catatan: typeof p.catatan === "string" && p.catatan.trim() ? p.catatan.trim() : null,
     };
 
-    if (existing) {
-      const { error } = await insforge.database
-        .from("pengukuran")
-        .update(row)
-        .eq("id", existing.id);
-      if (error) throw error;
-    } else {
-      const { error } = await insforge.database
-        .from("pengukuran")
-        .insert([row]);
-      if (error) throw error;
+    const writeRow = async (r: Record<string, any>) => {
+      if (existing) {
+        const { error } = await insforge.database
+          .from("pengukuran")
+          .update(r)
+          .eq("id", existing.id);
+        if (error) throw error;
+      } else {
+        // M2-006: idempoten — unique pengukuran(kunjungan_id) di DB membuat
+        // double-submit aman; bila race menghasilkan duplikat, ambil existing.
+        const { error } = await insforge.database
+          .from("pengukuran")
+          .insert([r]);
+        if (error) {
+          const msg = String((error as any)?.message || error);
+          if (/duplicate|unique|23505/i.test(msg)) {
+            const { data: retry } = await insforge.database
+              .from("pengukuran")
+              .select("id")
+              .eq("kunjungan_id", kunjunganId)
+              .order("created_at", { ascending: false })
+              .limit(1);
+            if (retry && retry.length > 0) {
+              const { error: uErr } = await insforge.database
+                .from("pengukuran")
+                .update(r)
+                .eq("id", retry[0].id);
+              if (uErr) throw uErr;
+              return;
+            }
+          }
+          throw error;
+        }
+      }
+    };
+
+    try {
+      await writeRow(row);
+    } catch (e: any) {
+      // Fallback bila migrasi 20260912000001 belum dijalankan di live DB:
+      // kolom `catatan` / nilai `data_baru` mungkin ditolak. Ulangi tanpa keduanya
+      // agar submit tidak gagal total; admin wajib menjalankan migrasi.
+      const msg = String(e?.message || e);
+      if (/catatan|data_baru|status_pertumbuhan|22P02|23514/i.test(msg)) {
+        console.warn("savePengukuran fallback tanpa kolom baru (jalankan migrasi 20260912000001):", msg);
+        const { catatan: _c, ...rest } = row;
+        if (rest.status_pertumbuhan === "data_baru") rest.status_pertumbuhan = null;
+        await writeRow(rest);
+      } else {
+        throw e;
+      }
     }
 
-    // Update status alur kunjungan
-    await insforge.database
+    // M2-011: status transition error WAJIB diperiksa — jangan sukses palsu.
+    const { error: trErr } = await insforge.database
       .from("kunjungan")
       .update({ status_alur: "meja_3_pencatatan" })
       .eq("id", kunjunganId);
+    if (trErr) throw new Error(`Pengukuran tersimpan tetapi status alur gagal diperbarui: ${trErr.message || trErr}`);
   },
 
-  async savePencatatan(kunjunganId: string, catatan: any) {
-    // Check if record exists
-    const { data: existing } = await insforge.database
+  /**
+   * Guard alur: Meja 3/4 wajib didahului pengukuran Meja 2 pada kunjungan yang sama.
+   * Mencegah kasus "selesai tanpa ukur" (Meja 2 terlewati via URL langsung).
+   */
+  async assertPengukuranExists(kunjunganId: string) {
+    if (!kunjunganId) throw new Error("kunjunganId wajib diisi.");
+    const { data: rows, error } = await insforge.database
+      .from("pengukuran")
+      .select("id")
+      .eq("kunjungan_id", kunjunganId)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (error) throw error;
+    if (!rows || rows.length === 0) {
+      throw new Error("Pengukuran Meja 2 belum tercatat untuk kunjungan ini. Selesaikan Meja 2 dulu.");
+    }
+    return rows[0];
+  },
+
+  /**
+   * M3-010 — service menolak catatan_bidan dari role Kader.
+   * UI menyembunyikan/mengunci field; penolakan server menutup bypass via API langsung.
+   */
+  assertBidanFieldAllowed(payload: any, actorRole?: string) {
+    const v = typeof payload?.catatan_bidan === "string" ? payload.catatan_bidan.trim() : "";
+    if (actorRole === "kader" && v) {
+      throw new Error("Field catatan Bidan hanya dapat diisi oleh Bidan/Admin.");
+    }
+  },
+
+  /** M3-006: fungsi RPC tidak tersedia di endpoint (fungsi belum terdaftar di gateway). */
+  isRpcMissing(e: any): boolean {
+    const code = String((e as any)?.code || "");
+    const msg = String((e as any)?.message || e || "");
+    const status = (e as any)?.status;
+    return (
+      code === "PGRST202" ||
+      status === 404 ||
+      /could not find the function/i.test(msg) ||
+      /failed to fetch|fetch failed|networkerror|load failed/i.test(msg)
+    );
+  },
+
+  async savePencatatan(
+    kunjunganId: string,
+    payload: any,
+    opts?: { actorRole?: string; expectedUpdatedAt?: string | null }
+  ): Promise<{ action: "created" | "updated"; id?: string; updatedAt?: string | null }> {
+    // M3-010: gate role sebelum validasi.
+    this.assertBidanFieldAllowed(payload, opts?.actorRole);
+    // M3-011: validator domain yang sama dengan UI.
+    const validation = validatePencatatan(payload || {});
+    if (!validation.valid) {
+      throw new Error(validation.firstError || "Catatan tidak valid.");
+    }
+    const clean = validation.value;
+
+    // Guards cepat sisi klien (gagal cepat sebelum RPC).
+    const visit = await this.assertVisitWritable(kunjunganId);
+    if (payload?.anggota_id && (visit as any).anggota_id && payload.anggota_id !== (visit as any).anggota_id) {
+      throw new Error("Kunjungan bukan milik peserta ini; mutasi ditolak.");
+    }
+    await this.assertPengukuranExists(kunjunganId);
+
+    // M3-006: jalur utama = transaksi atomik (upsert + transisi status) via RPC.
+    // Bila RPC tak terjangkau/fungsi tak terdaftar → fallback sekuensial idempoten.
+    let rpcOut: any = null;
+    let rpcDead = false;
+    try {
+      const res: any = await (insforge.database as any).rpc("simpan_pencatatan", {
+        p_kunjungan_id: kunjunganId,
+        p_keluhan: clean.keluhan,
+        p_temuan: clean.temuan,
+        p_catatan_kader: clean.catatan_kader,
+        p_catatan_bidan: clean.catatan_bidan,
+        p_expected_updated_at: opts?.expectedUpdatedAt ?? null,
+      });
+      if (res?.error) {
+        if (this.isRpcMissing(res.error)) {
+          rpcDead = true;
+        } else {
+          throw new Error(res.error.message || "Gagal menyimpan catatan via RPC.");
+        }
+      } else {
+        rpcOut = res?.data;
+      }
+    } catch (e: any) {
+      if (!this.isRpcMissing(e)) throw e;
+      rpcDead = true;
+    }
+    if (rpcDead) {
+      // Error fallback merambat langsung (tanpa catch ulang → tanpa rekursi).
+      return this.savePencatatanSequential(kunjunganId, clean, visit, opts);
+    }
+    if (!rpcOut || rpcOut.ok !== true) {
+      const err: any = new Error(rpcOut?.message || "Gagal menyimpan catatan.");
+      err.code = rpcOut?.code;
+      err.conflict = rpcOut?.conflict === true;
+      err.serverUpdatedAt = rpcOut?.server_updated_at ?? null;
+      throw err;
+    }
+    return {
+      action: rpcOut.action === "created" ? "created" : "updated",
+      id: rpcOut.id,
+      updatedAt: rpcOut.updated_at ?? null,
+    };
+  },
+
+  /**
+   * M3-005/M3-007/M3-015/M3-020 — Fallback sekuensial bila RPC tak tersedia.
+   * Idempoten (aman retry): upsert tahan race via unique + penanganan 23505,
+   * version check eksplisit, transisi maju-saja, error parsial eksplisit.
+   */
+  async savePencatatanSequential(
+    kunjunganId: string,
+    clean: { keluhan: string; temuan: string; catatan_kader: string; catatan_bidan: string },
+    visit: any,
+    opts?: { actorRole?: string; expectedUpdatedAt?: string | null }
+  ): Promise<{ action: "created" | "updated"; id?: string; updatedAt?: string | null }> {
+    void opts?.actorRole;
+    const { data: rows } = await insforge.database
       .from("catatan_kunjungan")
-      .select("id")
+      .select("id, updated_at")
       .eq("kunjungan_id", kunjunganId)
-      .maybeSingle();
+      .order("created_at", { ascending: false })
+      .limit(1);
+    const existing = rows && rows.length > 0 ? rows[0] : null;
+
+    // M3-015: tolak overwrite bila server berubah sejak dibaca.
+    if (opts?.expectedUpdatedAt != null && existing) {
+      if (isVersionConflict(opts.expectedUpdatedAt, existing.updated_at, true)) {
+        const err: any = new Error("Catatan berubah oleh petugas lain. Muat ulang sebelum menyimpan.");
+        err.conflict = true;
+        err.serverUpdatedAt = existing.updated_at ?? null;
+        throw err;
+      }
+    }
 
     const row = {
       kunjungan_id: kunjunganId,
-      keluhan: catatan.keluhan || null,
-      temuan: catatan.temuan || null,
-      catatan_kader: catatan.catatan_kader || null,
-      catatan_bidan: catatan.catatan_bidan || null,
-      updated_at: new Date().toISOString(),
+      keluhan: clean.keluhan,
+      temuan: clean.temuan,
+      catatan_kader: clean.catatan_kader,
+      catatan_bidan: clean.catatan_bidan,
     };
 
+    let rowId: string | undefined = existing?.id;
     if (existing) {
       const { error } = await insforge.database
         .from("catatan_kunjungan")
@@ -365,42 +671,183 @@ export const dbService = {
       const { error } = await insforge.database
         .from("catatan_kunjungan")
         .insert([row]);
-      if (error) throw error;
+      if (error) {
+        // M3-005: kalah race (kembaran insert duluan) → update baris pemenang.
+        const msg = String((error as any)?.message || error);
+        if (/duplicate|unique|23505/i.test(msg)) {
+          const { data: retry } = await insforge.database
+            .from("catatan_kunjungan")
+            .select("id")
+            .eq("kunjungan_id", kunjunganId)
+            .order("created_at", { ascending: false })
+            .limit(1);
+          if (retry && retry.length > 0) {
+            rowId = retry[0].id;
+            const { error: uErr } = await insforge.database
+              .from("catatan_kunjungan")
+              .update(row)
+              .eq("id", retry[0].id);
+            if (uErr) throw uErr;
+          } else {
+            throw error;
+          }
+        } else {
+          throw error;
+        }
+      }
     }
 
-    // Update status alur kunjungan
-    await insforge.database
-      .from("kunjungan")
-      .update({ status_alur: "meja_4_pelayanan" })
-      .eq("id", kunjunganId);
+    // M3-020: transisi maju-saja; tidak pernah regresi. Error eksplisit (M3-007).
+    const statusNow = (visit as any)?.status_alur;
+    let advanced = false;
+    if (["meja_1_registrasi", "meja_2_pengukuran", "meja_3_pencatatan"].includes(statusNow)) {
+      const { error: trErr } = await insforge.database
+        .from("kunjungan")
+        .update({ status_alur: "meja_4_pelayanan" })
+        .eq("id", kunjunganId);
+      if (trErr) {
+        throw new Error(`Catatan tersimpan tetapi status alur gagal diperbarui: ${trErr.message || trErr}`);
+      }
+      advanced = true;
+    }
+    void advanced;
+    return { action: existing ? "updated" : "created", id: rowId, updatedAt: null };
   },
 
-  async savePelayanan(kunjunganId: string, payload: any) {
-    const { data: existing } = await insforge.database
-      .from("pelayanan")
-      .select("id")
-      .eq("kunjungan_id", kunjunganId)
-      .maybeSingle();
+  /**
+   * M4-016 — service menolak tindakan imunisasi dari role Kader.
+   * Kader BOLEH menulis rujukan, tetapi TIDAK BOLEH memberikan imunisasi (dasar/TT).
+   */
+  assertImunisasiAllowed(payload: any, actorRole?: string) {
+    if (actorRole !== "kader") return;
+    const v = normalizePelayanan(payload);
+    if (v.imunisasi.length > 0 || v.imunisasi_tt_ke !== null || (payload as any)?.imunisasi_tt === true) {
+      throw new Error("Imunisasi hanya dapat diberikan oleh Bidan/Admin. Kader tidak boleh menyuntikkan/memberikan imunisasi.");
+    }
+  },
 
-    const row = {
-      kunjungan_id: kunjunganId,
-      vitamin_a: Boolean(payload.vitamin_a),
-      pmt: Boolean(payload.pmt),
-      pmt_jenis: payload.pmt_jenis || null,
-      imunisasi: Boolean(payload.imunisasi && payload.imunisasi.length > 0),
-      imunisasi_jenis: payload.imunisasi?.join(", ") || null,
-      tablet_fe: Boolean(payload.tablet_fe),
-      imunisasi_tt: payload.imunisasi_tt_ke != null,
-      imunisasi_tt_ke: payload.imunisasi_tt_ke || null,
-      rujukan: Boolean(payload.rujukan),
-      rujukan_tujuan: payload.rujukan_tujuan || null,
-      rujukan_catatan: payload.catatan_rujukan || payload.alasan_rujukan || null,
-      konseling: Boolean(payload.konseling || payload.nasihat),
-      konseling_catatan: payload.nasihat || null,
-      obat_rutin: payload.obat_rutin || null,
-      skrining_anemia: Boolean(payload.skrining_anemia),
+  async savePelayanan(
+    kunjunganId: string,
+    payload: any,
+    opts?: { actorRole?: string; expectedUpdatedAt?: string | null }
+  ): Promise<{ action: "created" | "updated"; id?: string; updatedAt?: string | null; imunisasiDisimpan?: number }> {
+    // M4-016: gate tindakan medis sebelum validasi.
+    this.assertImunisasiAllowed(payload, opts?.actorRole);
+    // M4-004/M4-005/M4-011/M4-012: validator domain yang sama dengan UI.
+    const validation = validatePelayanan(payload || {});
+    if (!validation.valid) {
+      throw new Error(validation.firstError || "Pelayanan tidak valid.");
+    }
+    const clean = validation.value;
+
+    // Guards cepat sisi klien (gagal cepat sebelum RPC).
+    const visit = await this.assertVisitWritable(kunjunganId);
+    const anggotaId = payload?.anggota_id || (visit as any).anggota_id;
+    if (payload?.anggota_id && (visit as any).anggota_id && payload.anggota_id !== (visit as any).anggota_id) {
+      throw new Error("Kunjungan bukan milik peserta ini; mutasi ditolak.");
+    }
+    await this.assertPengukuranExists(kunjunganId);
+
+    // M4-006: jalur utama = transaksi atomik via RPC
+    // (upsert pelayanan + imunisasi idempoten + transisi maju-saja).
+    const dbRow = toDbPelayananRow(kunjunganId, clean);
+    let rpcOut: any = null;
+    let rpcDead = false;
+    try {
+      const res: any = await (insforge.database as any).rpc("simpan_pelayanan", {
+        p_kunjungan_id: kunjunganId,
+        p_anggota_id: anggotaId,
+        p_payload: {
+          vitamin_a: dbRow.vitamin_a,
+          pmt: dbRow.pmt,
+          pmt_jenis: dbRow.pmt_jenis,
+          imunisasi: dbRow.imunisasi,
+          imunisasi_jenis: dbRow.imunisasi_jenis,
+          tablet_fe: dbRow.tablet_fe,
+          imunisasi_tt: dbRow.imunisasi_tt,
+          imunisasi_tt_ke: dbRow.imunisasi_tt_ke,
+          rujukan: dbRow.rujukan,
+          tujuan_rujukan: dbRow.rujukan_tujuan,
+          alasan_rujukan: dbRow.rujukan_alasan,
+          konseling: dbRow.konseling,
+          konseling_catatan: dbRow.konseling_catatan,
+          obat_rutin: dbRow.obat_rutin,
+          skrining_anemia: dbRow.skrining_anemia,
+        },
+        p_imunisasi_jenis: clean.imunisasi,
+        p_tanggal: new Date().toISOString().split("T")[0],
+        p_expected_updated_at: opts?.expectedUpdatedAt ?? null,
+      });
+      if (res?.error) {
+        if (this.isRpcMissing(res.error)) {
+          rpcDead = true;
+        } else {
+          throw new Error(res.error.message || "Gagal menyimpan pelayanan via RPC.");
+        }
+      } else {
+        rpcOut = res?.data;
+      }
+    } catch (e: any) {
+      if (!this.isRpcMissing(e)) throw e;
+      rpcDead = true;
+    }
+    if (rpcDead) {
+      return this.savePelayananSequential(kunjunganId, anggotaId, clean, visit, opts);
+    }
+    if (!rpcOut || rpcOut.ok !== true) {
+      const err: any = new Error(rpcOut?.message || "Gagal menyimpan pelayanan.");
+      err.code = rpcOut?.code;
+      err.conflict = rpcOut?.conflict === true;
+      err.serverUpdatedAt = rpcOut?.server_updated_at ?? null;
+      throw err;
+    }
+    return {
+      action: rpcOut.action === "created" ? "created" : "updated",
+      id: rpcOut.id,
+      updatedAt: rpcOut.updated_at ?? null,
+      imunisasiDisimpan: rpcOut.imunisasi_disimpan ?? 0,
     };
+  },
 
+  /**
+   * M4-006/M4-007/M4-023 — Fallback sekuensial bila RPC tak tersedia.
+   * Idempoten: upsert tahan race (unique + 23505), imunisasi insert-abaikan-duplikat,
+   * transisi maju-saja, error parsial eksplisit (M4-018).
+   */
+  async savePelayananSequential(
+    kunjunganId: string,
+    anggotaId: string,
+    clean: {
+      vitamin_a: boolean; pmt: boolean; pmt_jenis: string | null;
+      imunisasi: string[]; tablet_fe: boolean;
+      imunisasi_tt_ke: number | null; rujukan: boolean;
+      tujuan_rujukan: string; alasan_rujukan: string;
+      konseling: boolean; obat_rutin: string; skrining_anemia: boolean;
+    },
+    visit: any,
+    opts?: { actorRole?: string; expectedUpdatedAt?: string | null }
+  ): Promise<{ action: "created" | "updated"; id?: string; updatedAt?: string | null; imunisasiDisimpan?: number }> {
+    void opts?.actorRole;
+    const { data: rows } = await insforge.database
+      .from("pelayanan")
+      .select("id, updated_at")
+      .eq("kunjungan_id", kunjunganId)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    const existing = rows && rows.length > 0 ? rows[0] : null;
+
+    // M4-019: tolak overwrite bila server berubah sejak dibaca.
+    if (opts?.expectedUpdatedAt != null && existing) {
+      if (isVersionConflict(opts.expectedUpdatedAt, existing.updated_at, true)) {
+        const err: any = new Error("Pelayanan berubah oleh petugas lain. Muat ulang sebelum menyimpan.");
+        err.conflict = true;
+        err.serverUpdatedAt = existing.updated_at ?? null;
+        throw err;
+      }
+    }
+
+    const row = toDbPelayananRow(kunjunganId, clean);
+    let rowId: string | undefined = existing?.id;
     if (existing) {
       const { error } = await insforge.database
         .from("pelayanan")
@@ -411,14 +858,107 @@ export const dbService = {
       const { error } = await insforge.database
         .from("pelayanan")
         .insert([row]);
-      if (error) throw error;
+      if (error) {
+        // M4-008: kalah race → update baris pemenang.
+        const msg = String((error as any)?.message || error);
+        if (/duplicate|unique|23505/i.test(msg)) {
+          const { data: retry } = await insforge.database
+            .from("pelayanan")
+            .select("id")
+            .eq("kunjungan_id", kunjunganId)
+            .order("created_at", { ascending: false })
+            .limit(1);
+          if (retry && retry.length > 0) {
+            rowId = retry[0].id;
+            const { error: uErr } = await insforge.database
+              .from("pelayanan")
+              .update(row)
+              .eq("id", retry[0].id);
+            if (uErr) throw uErr;
+          } else {
+            throw error;
+          }
+        } else {
+          throw error;
+        }
+      }
     }
 
-    // Update status alur kunjungan ke selesai
-    await insforge.database
+    // M4-007 (fallback): imunisasi per jenis, abaikan duplikat (constraint).
+    let imunisasiDisimpan = 0;
+    const tanggal = new Date().toISOString().split("T")[0];
+    for (const jenis of clean.imunisasi) {
+      const { error } = await insforge.database
+        .from("imunisasi")
+        .insert([{ anggota_id: anggotaId, jenis, tanggal, kunjungan_id: kunjunganId }]);
+      if (!error) {
+        imunisasiDisimpan++;
+      } else if (!/duplicate|unique|23505/i.test(String((error as any)?.message || error))) {
+        // M4-018: kegagalan imunisasi BUKAN warning diam — lempar eksplisit.
+        throw new Error(`Pelayanan tersimpan tetapi imunisasi ${jenis} gagal dicatat: ${(error as any)?.message || error}`);
+      }
+    }
+
+    // M5-018: terminal Meja 4 = 'meja_5_penyuluhan' (menunggu penyuluhan/
+    // penutupan sesi). 'selesai' hanya oleh penutupan sesi. Tak pernah regresi.
+    const statusNow = (visit as any)?.status_alur;
+    if (["meja_1_registrasi", "meja_2_pengukuran", "meja_3_pencatatan", "meja_4_pelayanan"].includes(statusNow)) {
+      const { error: trErr } = await insforge.database
+        .from("kunjungan")
+        .update({ status_alur: "meja_5_penyuluhan" })
+        .eq("id", kunjunganId);
+      if (trErr) {
+        throw new Error(`Pelayanan tersimpan tetapi status alur gagal diperbarui: ${trErr.message || trErr}`);
+      }
+    } else if (statusNow !== "meja_5_penyuluhan") {
+      throw new Error(`Transisi status dari "${statusNow || "?"}" ke meja_5_penyuluhan tidak valid.`);
+    }
+    return { action: existing ? "updated" : "created", id: rowId, updatedAt: null, imunisasiDisimpan };
+  },
+
+  /**
+   * M4-022 — Reopen resmi: kembalikan visit SELESAI atau MEJA_5 (menunggu
+   * finalisasi) ke tahap koreksi. Hanya Bidan/Super Admin. Audit REOPEN wajib
+   * (di store). F-05: tanpa ini, visit meja_5 yang diblokir dari semua detail
+   * meja tidak punya jalan koreksi pra-tutup sesi.
+   */
+  async reopenAlur(
+    kunjunganId: string,
+    target: "meja_2_pengukuran" | "meja_3_pencatatan" | "meja_4_pelayanan",
+    actorRole?: string
+  ) {
+    if (actorRole !== "bidan" && actorRole !== "super_admin") {
+      throw new Error("Membuka kembali kunjungan selesai hanya untuk Bidan/Admin.");
+    }
+    if (!kunjunganId) throw new Error("kunjunganId wajib diisi.");
+    const { data: visit, error: vErr } = await insforge.database
       .from("kunjungan")
-      .update({ status_alur: "selesai" })
+      .select("id, status_alur, jadwal_posyandu_id")
+      .eq("id", kunjunganId)
+      .maybeSingle();
+    if (vErr) throw vErr;
+    if (!visit) throw new Error("Kunjungan tidak ditemukan di database.");
+    if (!["selesai", "meja_5_penyuluhan"].includes(visit.status_alur)) {
+      throw new Error("Hanya kunjungan berstatus selesai atau menunggu finalisasi yang dapat dibuka kembali.");
+    }
+    if (visit.jadwal_posyandu_id) {
+      const { data: jadwal } = await insforge.database
+        .from("jadwal_posyandu")
+        .select("id, status")
+        .eq("id", visit.jadwal_posyandu_id)
+        .maybeSingle();
+      if (!jadwal) throw new Error("Sesi posyandu kunjungan ini tidak valid.");
+      if (jadwal.status !== "aktif") {
+        throw new Error(`Sesi berstatus "${jadwal.status}"; reopen hanya pada sesi aktif.`);
+      }
+    }
+    // Koreksi wajib diverifikasi ulang: alur mundur + verifikasi ke diperiksa.
+    const { error } = await insforge.database
+      .from("kunjungan")
+      .update({ status_alur: target, status_verifikasi: "diperiksa" })
       .eq("id", kunjunganId);
+    if (error) throw error;
+    return { kunjunganId, target };
   },
 
   async verifyKunjungan(kunjunganId: string, status: "valid" | "draft" | "diperiksa" = "valid") {
@@ -433,11 +973,39 @@ export const dbService = {
   },
 
   async closeSession(jadwalId: string) {
+    if (!jadwalId) throw new Error("jadwalId wajib diisi untuk menutup sesi.");
+    // Urutan penting: finalkan visit DULU, baru jadwal. Jika flip jadwal gagal,
+    // retry bersih (idempoten); sebaliknya sesi tampak tutup padahal visit masih terbuka.
+    await this.selesaikanKunjunganSesi(jadwalId);
     const { error } = await insforge.database
       .from("jadwal_posyandu")
       .update({ status: "selesai" })
       .eq("id", jadwalId);
     if (error) throw error;
+  },
+
+  /**
+   * Finalkan semua kunjungan satu sesi menjadi 'selesai' (idempoten).
+   * Hanya memakai kolom jadwal_posyandu_id — kolom jadwal_id TIDAK ADA di DB
+   * live (filter ke kolom tak ada melempar 400 dan menggagalkan tutup sesi).
+   */
+  async selesaikanKunjunganSesi(jadwalId: string): Promise<{ finalizedCount: number }> {
+    if (!jadwalId) throw new Error("jadwalId wajib diisi.");
+    const { data: rows, error: selError } = await insforge.database
+      .from("kunjungan")
+      .select("id, status_alur")
+      .eq("jadwal_posyandu_id", jadwalId);
+    if (selError) throw selError;
+    const ids = (rows || [])
+      .filter((r: any) => r?.id && r?.status_alur !== "selesai")
+      .map((r: any) => r.id);
+    if (ids.length === 0) return { finalizedCount: 0 };
+    const { error: updError } = await insforge.database
+      .from("kunjungan")
+      .update({ status_alur: "selesai" })
+      .in("id", ids);
+    if (updError) throw updError;
+    return { finalizedCount: ids.length };
   },
 
   // ================= AUDIT LOGS (PostgreSQL audit_log) =================
@@ -491,7 +1059,13 @@ export const dbService = {
     return data || [];
   },
 
-  async catatRisiko(rows: Array<{
+  /**
+   * M2-008/M2-009 — Replace risiko atomik-per-kunjungan.
+   * SELALU delete by kunjungan_id dulu, lalu insert bila ada rows.
+   * Input normal (risiko kosong) menghapus risiko stale lama.
+   * Idempoten sehingga aman di-retry setelah partial failure (M2-007).
+   */
+  async replaceRisiko(kunjunganId: string, rows: Array<{
     kunjungan_id: string;
     anggota_id: string;
     kode_risiko: string;
@@ -499,19 +1073,28 @@ export const dbService = {
     severity: string;
     tindak_lanjut?: string;
   }>) {
+    if (!kunjunganId) throw new Error("kunjunganId wajib diisi untuk replace risiko.");
+    const { error: delErr } = await insforge.database.from("risiko").delete().eq("kunjungan_id", kunjunganId);
+    if (delErr) throw delErr;
     if (!rows.length) return;
-    const kunjunganId = rows[0].kunjungan_id;
-    if (kunjunganId) {
-      try {
-        await insforge.database.from("risiko").delete().eq("kunjungan_id", kunjunganId);
-      } catch (e) {
-        console.warn("Could not delete prior risiko for kunjungan:", e);
-      }
-    }
     const { error } = await insforge.database
       .from("risiko")
       .insert(rows);
     if (error) throw error;
+  },
+
+  async catatRisiko(rows: Array<{
+    kunjungan_id: string;
+    anggota_id: string;
+    kode_risiko: string;
+    deskripsi: string;
+    severity: string;
+    tindak_lanjut?: string;
+  }>, kunjunganId?: string) {
+    const targetId = kunjunganId || (rows.length > 0 ? rows[0].kunjungan_id : undefined);
+    // M2-008: tanpa target kunjungan tidak ada yang bisa di-replace — no-op eksplisit.
+    if (!targetId) return;
+    return this.replaceRisiko(targetId, rows);
   },
 
   async updateStatusRisiko(
@@ -706,96 +1289,217 @@ export const dbService = {
   },
 
   // ================= PENYULUHAN (MEJA 5) =================
+  /**
+   * M5-019: error DB dilempar (bukan [] diam) agar UI dapat membedakan
+   * "belum ada penyuluhan" dari "gagal membaca".
+   */
   async getPenyuluhan(jadwalId?: string) {
-    try {
-      let query = insforge.database
-        .from("penyuluhan")
-        .select("*")
-        .order("created_at", { ascending: false });
+    let query = insforge.database
+      .from("penyuluhan")
+      .select("*")
+      .order("created_at", { ascending: false });
 
-      if (jadwalId) {
-        query = query.eq("jadwal_id", jadwalId);
-      }
-
-      const { data, error } = await query;
-      if (error) {
-        console.warn("getPenyuluhan DB info:", error.message || error);
-        return [];
-      }
-      return (data || []).map((p: any) => ({
-        ...p,
-        jadwal_posyandu_id: p.jadwal_id,
-        jumlah: p.jumlah_peserta,
-      }));
-    } catch (e) {
-      console.warn("getPenyuluhan non-critical exception:", e);
-      return [];
+    if (jadwalId) {
+      query = query.eq("jadwal_posyandu_id", jadwalId);
     }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return (data || []).map((p: any) => fromDbPenyuluhan(p));
   },
 
-  async catatPenyuluhan(penyuluhan: any) {
-    const jadwalId = penyuluhan.jadwal_id || penyuluhan.jadwal_posyandu_id || penyuluhan.sesi_id;
-    const jumlahPeserta = Number(penyuluhan.jumlah_peserta ?? penyuluhan.jumlah ?? 1);
-
-    const payload: any = {
-      jadwal_id: jadwalId,
-      tema: penyuluhan.tema,
-      narasumber: penyuluhan.narasumber,
-      jumlah_peserta: jumlahPeserta,
-      metode: penyuluhan.metode || "Ceramah",
-      media: penyuluhan.media || "",
-      ringkasan: penyuluhan.ringkasan || "",
-    };
-
-    if (penyuluhan.created_by) {
-      payload.created_by = penyuluhan.created_by;
+  /** Guard sesi untuk tulis penyuluhan: jadwal ada + berstatus aktif. */
+  async assertPenyuluhanSession(jadwalId?: string) {
+    if (!jadwalId) {
+      throw new Error("Sesi posyandu wajib dipilih. Buka sesi hari H dulu.");
     }
+    const { data: jadwal, error } = await insforge.database
+      .from("jadwal_posyandu")
+      .select("id, status")
+      .eq("id", jadwalId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!jadwal) throw new Error("Sesi posyandu tidak ditemukan di database.");
+    if (jadwal.status !== "aktif") {
+      throw new Error(`Sesi posyandu berstatus "${jadwal.status}"; pencatatan hanya pada sesi aktif.`);
+    }
+    return jadwal;
+  },
 
-    try {
-      const { data, error } = await insforge.database
+  /**
+   * M5-004/M5-006/M5-007: catat penyuluhan HANYA via DB (tanpa fallback lokal).
+   * Validasi + guard sesi + insert; duplikat (sesi, tema) mengembalikan baris
+   * yang sudah ada (idempoten double-submit) dengan flag existed.
+   */
+  async catatPenyuluhan(
+    penyuluhan: any,
+    opts?: { actorRole?: string; sessionId?: string }
+  ): Promise<{ row: any; action: "created" | "existed" }> {
+    if (!canManagePenyuluhan(opts?.actorRole)) {
+      throw new Error("Dokumentasi penyuluhan hanya untuk Kader/Bidan/Admin.");
+    }
+    const validation = validatePenyuluhanInput(penyuluhan || {});
+    if (!validation.valid) {
+      throw new Error(validation.firstError || "Penyuluhan tidak valid.");
+    }
+    const jadwalId =
+      opts?.sessionId || penyuluhan.jadwal_posyandu_id || penyuluhan.jadwal_id || penyuluhan.sesi_id;
+    await this.assertPenyuluhanSession(jadwalId);
+    const row = toDbPenyuluhanRow(jadwalId, validation.value);
+
+    const { data, error } = await insforge.database
+      .from("penyuluhan")
+      .insert([row])
+      .select("*")
+      .single();
+
+    if (!error) {
+      return { row: fromDbPenyuluhan(data), action: "created" };
+    }
+    // M5-007: kalah race / double submit dengan tema sama -> kembalikan yang ada.
+    const msg = String((error as any)?.message || error);
+    if (/duplicate|unique|23505/i.test(msg)) {
+      const { data: retry, error: rErr } = await insforge.database
         .from("penyuluhan")
-        .insert([payload])
         .select("*")
-        .single();
-
-      if (error) {
-        console.warn("catatPenyuluhan DB error (falling back to local):", error.message || error);
-        return {
-          id: penyuluhan.id || `peny-${Date.now()}`,
-          jadwal_id: jadwalId,
-          jadwal_posyandu_id: jadwalId,
-          tema: penyuluhan.tema,
-          narasumber: penyuluhan.narasumber,
-          jumlah_peserta: jumlahPeserta,
-          jumlah: jumlahPeserta,
-          metode: penyuluhan.metode,
-          media: penyuluhan.media,
-          ringkasan: penyuluhan.ringkasan,
-          created_at: new Date().toISOString(),
-        };
+        .eq("jadwal_posyandu_id", jadwalId)
+        .eq("tema", row.tema)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (!rErr && retry && retry.length > 0) {
+        return { row: fromDbPenyuluhan(retry[0]), action: "existed" };
       }
-
-      return {
-        ...data,
-        jadwal_posyandu_id: data.jadwal_id,
-        jumlah: data.jumlah_peserta,
-      };
-    } catch (e) {
-      console.warn("catatPenyuluhan exception (falling back to local):", e);
-      return {
-        id: penyuluhan.id || `peny-${Date.now()}`,
-        jadwal_id: jadwalId,
-        jadwal_posyandu_id: jadwalId,
-        tema: penyuluhan.tema,
-        narasumber: penyuluhan.narasumber,
-        jumlah_peserta: jumlahPeserta,
-        jumlah: jumlahPeserta,
-        metode: penyuluhan.metode,
-        media: penyuluhan.media,
-        ringkasan: penyuluhan.ringkasan,
-        created_at: new Date().toISOString(),
-      };
     }
+    throw error;
+  },
+
+  /** M5-011: ubah penyuluhan (sesi aktif + permission). */
+  async updatePenyuluhan(
+    id: string,
+    patch: any,
+    opts?: { actorRole?: string }
+  ) {
+    if (!canManagePenyuluhan(opts?.actorRole)) {
+      throw new Error("Mengubah penyuluhan hanya untuk Kader/Bidan/Admin.");
+    }
+    if (!id) throw new Error("ID penyuluhan wajib diisi.");
+    const { data: current, error: cErr } = await insforge.database
+      .from("penyuluhan")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
+    if (cErr) throw cErr;
+    if (!current) throw new Error("Data penyuluhan tidak ditemukan.");
+    await this.assertPenyuluhanSession(current.jadwal_posyandu_id || current.jadwal_id);
+
+    const merged = { ...fromDbPenyuluhan(current), ...(patch || {}) };
+    const validation = validatePenyuluhanInput(merged);
+    if (!validation.valid) {
+      throw new Error(validation.firstError || "Penyuluhan tidak valid.");
+    }
+    const row = toDbPenyuluhanRow(
+      current.jadwal_posyandu_id || current.jadwal_id,
+      validation.value
+    );
+    const { data, error } = await insforge.database
+      .from("penyuluhan")
+      .update({
+        tema: row.tema,
+        narasumber: row.narasumber,
+        jumlah_peserta: row.jumlah_peserta,
+        metode: row.metode,
+        media: row.media,
+        ringkasan: row.ringkasan,
+      })
+      .eq("id", id)
+      .select("*")
+      .single();
+    if (error) throw error;
+    return fromDbPenyuluhan(data);
+  },
+
+  // ================= RENCANA KUNJUNGAN RUMAH (REKAP RK-015) =================
+  async getRencanaKunjungan(status?: "terjadwal" | "selesai" | "dibatalkan") {
+    let query = insforge.database
+      .from("rencana_kunjungan_rumah")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (status) query = query.eq("status", status);
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+  },
+
+  /**
+   * RK-015: jadwalkan kunjungan rumah (persist, bukan toast palsu).
+   * Idempoten: bila sudah ada rencana aktif untuk anggota -> kembalikan itu.
+   */
+  async jadwalkanKunjunganRumah(
+    anggotaId: string,
+    jadwalId?: string | null,
+    alasan?: string | null
+  ) {
+    if (!anggotaId) throw new Error("anggotaId wajib diisi.");
+    const { data, error } = await insforge.database
+      .from("rencana_kunjungan_rumah")
+      .insert([{
+        anggota_id: anggotaId,
+        jadwal_posyandu_id: jadwalId || null,
+        alasan: (alasan || "").trim() || null,
+        status: "terjadwal",
+      }])
+      .select("*")
+      .single();
+    if (!error) return { row: data, action: "created" as const };
+    // Sudah ada rencana aktif (unique partial) -> kembalikan barisnya.
+    const msg = String((error as any)?.message || error);
+    if (/duplicate|unique|23505/i.test(msg)) {
+      const { data: retry, error: rErr } = await insforge.database
+        .from("rencana_kunjungan_rumah")
+        .select("*")
+        .eq("anggota_id", anggotaId)
+        .eq("status", "terjadwal")
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (!rErr && retry && retry.length > 0) {
+        return { row: retry[0], action: "existed" as const };
+      }
+    }
+    throw error;
+  },
+
+  async updateStatusRencana(id: string, status: "terjadwal" | "selesai" | "dibatalkan") {
+    if (!id) throw new Error("ID rencana wajib diisi.");
+    if (!["terjadwal", "selesai", "dibatalkan"].includes(status)) {
+      throw new Error(`Status rencana tidak valid: ${status}.`);
+    }
+    const { data, error } = await insforge.database
+      .from("rencana_kunjungan_rumah")
+      .update({ status })
+      .eq("id", id)
+      .select("*")
+      .single();
+    if (error) throw error;
+    return data;
+  },
+
+  /** M5-011: hapus penyuluhan (sesi aktif + permission). */
+  async hapusPenyuluhan(id: string, opts?: { actorRole?: string }) {
+    if (!canManagePenyuluhan(opts?.actorRole)) {
+      throw new Error("Menghapus penyuluhan hanya untuk Kader/Bidan/Admin.");
+    }
+    if (!id) throw new Error("ID penyuluhan wajib diisi.");
+    const { data: current, error: cErr } = await insforge.database
+      .from("penyuluhan")
+      .select("id, jadwal_posyandu_id, jadwal_id")
+      .eq("id", id)
+      .maybeSingle();
+    if (cErr) throw cErr;
+    if (!current) throw new Error("Data penyuluhan tidak ditemukan.");
+    await this.assertPenyuluhanSession(current.jadwal_posyandu_id || current.jadwal_id);
+    const { error } = await insforge.database.from("penyuluhan").delete().eq("id", id);
+    if (error) throw error;
+    return { id };
   },
 
   // ================= SUPER ADMIN CLEANUP =================

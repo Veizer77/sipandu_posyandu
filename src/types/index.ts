@@ -15,7 +15,8 @@ export type StatusAlur =
   | "meja_4_pelayanan"
   | "meja_5_penyuluhan"
   | "selesai";
-export type StatusPertumbuhan = "naik" | "tidak_naik" | "turun";
+// M2-010: "data_baru" = kunjungan pertama / tanpa baseline. Bukan "naik".
+export type StatusPertumbuhan = "naik" | "tidak_naik" | "turun" | "data_baru";
 export type StatusGizi = "buruk" | "kurang" | "normal" | "lebih" | "obesitas";
 
 export interface Posyandu {
@@ -92,6 +93,7 @@ export interface JadwalPosyandu {
   tempat: string;
   catatan?: string;
   status: "draft" | "aktif" | "selesai" | "dibatalkan";
+  sasaran?: SasaranKategori[];
 }
 
 export interface Kunjungan {
@@ -108,43 +110,133 @@ export interface Pengukuran {
   kunjungan_id: string;
   berat_badan: number;
   tinggi_badan?: number | null;
+  panjang_badan?: number | null;
   lingkar_kepala?: number | null;
+  // Kanonis: lingkar_lengan (alias legacy: lingkar_lengan_atas) — M2-026
   lingkar_lengan?: number | null;
+  lingkar_perut?: number | null;
+  // Kanonis form: td_sistolik/td_diastolik (kolom DB: tekanan_darah_sistol/diastol) — M2-026
+  td_sistolik?: number | null;
+  td_diastolik?: number | null;
   tekanan_darah?: string | null;
+  // Kanonis form: gula_darah_sewaktu (kolom DB: gula_darah) — M2-026
   gula_darah_sewaktu?: number | null;
+  tinggi_fundus?: number | null;
+  djj?: number | null;
+  imt?: number | null;
+  usia_saat_ukur?: number | null;
   z_score_bbu?: number | null;
   z_score_tbu?: number | null;
   z_score_bbtb?: number | null;
-  status_pertumbuhan?: StatusPertumbuhan;
+  status_gizi?: StatusGizi;
+  status_pertumbuhan?: StatusPertumbuhan | null;
+  catatan?: string | null;
   catatan_kader?: string | null;
 }
 
+// M4-003/M4-024/M4-025: DTO canonical Meja 4 (UI/store/service).
+// Kolom DB (rujukan_tujuan, rujukan_alasan, imunisasi boolean+jenis) dipetakan
+// HANYA di boundary dbService. Legacy: rujukan_catatan, obat_cacing (kolom tak ada).
 export interface Pelayanan {
   id: string;
   kunjungan_id: string;
   vitamin_a?: boolean;
   pmt?: boolean;
+  pmt_jenis?: string | null;
+  /** Canonical UI: SELALU string[]. */
   imunisasi?: string[];
   tablet_fe?: boolean;
-  obat_cacing?: boolean;
+  /** Hanya Bidan/Admin yang boleh memberikan (M4-016). */
+  imunisasi_tt_ke?: number | null;
   rujukan?: boolean;
   tujuan_rujukan?: string | null;
   alasan_rujukan?: string | null;
+  konseling?: boolean;
+  obat_rutin?: string | null;
+  skrining_anemia?: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
+export interface PelayananInput {
+  vitamin_a?: boolean;
+  pmt?: boolean;
+  pmt_jenis?: string | null;
+  imunisasi?: string[];
+  tablet_fe?: boolean;
+  imunisasi_tt?: boolean;
+  imunisasi_tt_ke?: number | null;
+  rujukan?: boolean;
+  tujuan_rujukan?: string | null;
+  alasan_rujukan?: string | null;
+  konseling?: boolean;
+  obat_rutin?: string | null;
+  skrining_anemia?: boolean;
+  anggota_id?: string;
+}
+
+/** Hasil simpan Meja 4: aksi + versi + imunisasi tersimpan (M4-019). */
+export interface SavePelayananResult {
+  action: "created" | "updated";
+  id?: string;
+  updatedAt?: string | null;
+  imunisasiDisimpan?: number;
+}
+
+// M3-011/M3-018: input + record Meja 3 (satu row catatan per visit).
+export interface PencatatanInput {
+  keluhan?: string | null;
+  temuan?: string | null;
+  catatan_kader?: string | null;
+  /** Hanya Bidan/Admin (M3-010). Service menolak bila pengirim role Kader. */
+  catatan_bidan?: string | null;
+  anggota_id?: string;
+}
+
+export interface CatatanKunjunganRecord {
+  id: string;
+  kunjungan_id: string;
+  keluhan?: string | null;
+  temuan?: string | null;
+  catatan_kader?: string | null;
+  catatan_bidan?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+/** Hasil simpan Meja 3: aksi + versi untuk concurrency (M3-015/M3-016). */
+export interface SavePencatatanResult {
+  action: "created" | "updated";
+  id?: string;
+  updatedAt?: string | null;
+}
+
+// M5-029: DTO canonical (jadwal_posyandu_id kanonis; alias legacy dipertahankan).
 export interface Penyuluhan {
   id: string;
-  jadwal_id: string;
-  jadwal_posyandu_id?: string;
+  /** Kanonis: FK sesi. */
+  jadwal_posyandu_id: string;
+  /** Alias legacy (mirror). */
+  jadwal_id?: string;
   tema: string;
   narasumber: string;
   jumlah_peserta: number;
+  /** Alias baca. */
   jumlah?: number;
-  metode?: string;
-  media?: string;
-  ringkasan?: string;
-  created_by?: string;
-  created_at?: string;
+  metode?: string | null;
+  media?: string | null;
+  ringkasan?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface PenyuluhanInput {
+  tema: string;
+  narasumber: string;
+  jumlah_peserta: number;
+  metode?: string | null;
+  media?: string | null;
+  ringkasan?: string | null;
 }
 
 export interface AuditLog {

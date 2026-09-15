@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import WHO_ENGINE from "@/utils/zscoreCalculator";
+import { normalisasiStatusGizi, normalisasiStatusPertumbuhan, parseNumberOrNull } from "@/services/dbService";
 
 describe("Bug Fixes Verification", () => {
   describe("Bug 1 & 2 & 8: Alur Risiko & Objek Risiko", () => {
@@ -394,7 +395,7 @@ describe("Bug Fixes Verification", () => {
       expect(validRes.errors).toHaveLength(0);
     });
 
-    it("memastikan data penyuluhan sesi aktif terintegrasi dan muncul di Rekapitulasi Sesi", () => {
+    it("memastikan data penyuluhan sesi aktif terintegrasi dan muncul di Rekapitulasi Sesi", async () => {
       const activeJadwalId = "jadwal-aktif-uuid-001";
       const otherJadwalId = "jadwal-lampau-uuid-999";
 
@@ -423,16 +424,78 @@ describe("Bug Fixes Verification", () => {
         },
       ];
 
-      // Simulasi filtering penyuluhanSesi di Rekap.tsx
-      const penyuluhanSesi = mockPenyuluhanList.filter(
-        (p: any) => !activeJadwalId || p.jadwal_posyandu_id === activeJadwalId || p.jadwal_id === activeJadwalId
-      );
+      // M5-008/M5-020: filter sesi via helper canonical (tanpa fallthrough semua-sesi).
+      const { getPenyuluhanSesi } = await import("@/lib/meja5Logic");
+      const penyuluhanSesi = getPenyuluhanSesi(mockPenyuluhanList, activeJadwalId);
 
       expect(penyuluhanSesi).toHaveLength(1);
       expect(penyuluhanSesi[0].id).toBe("peny-1");
       expect(penyuluhanSesi[0].tema).toContain("Pencegahan Stunting");
       // Memastikan field jumlah_peserta tersedia untuk dirender di kartu Rekap
       expect(penyuluhanSesi[0].jumlah_peserta ?? penyuluhanSesi[0].jumlah).toBe(22);
+      // Tanpa sesi aktif -> kosong (bukan seluruh data).
+      expect(getPenyuluhanSesi(mockPenyuluhanList, null)).toHaveLength(0);
+    });
+  });
+
+  describe("Bug Fix: PostgreSQL Enum Normalization (status_gizi & status_pertumbuhan)", () => {
+    it("menormalisasi semua variasi label status_gizi ke PostgreSQL enum yang valid (buruk, kurang, normal, lebih, obesitas)", () => {
+      // Kasus error aktual dari user: "Gizi Baik (Normal)"
+      expect(normalisasiStatusGizi("Gizi Baik (Normal)")).toBe("normal");
+      expect(normalisasiStatusGizi("Normal")).toBe("normal");
+      expect(normalisasiStatusGizi("normal")).toBe("normal");
+
+      // Kasus gizi kurang & gizi buruk
+      expect(normalisasiStatusGizi("Gizi Kurang (Wasted)")).toBe("kurang");
+      expect(normalisasiStatusGizi("Gizi Kurang")).toBe("kurang");
+      expect(normalisasiStatusGizi("Gizi Buruk (Severely Wasted)")).toBe("buruk");
+      expect(normalisasiStatusGizi("Gizi Buruk")).toBe("buruk");
+      expect(normalisasiStatusGizi("Sangat Kurang")).toBe("buruk");
+
+      // Kasus gizi lebih & obesitas
+      expect(normalisasiStatusGizi("Berisiko Gizi Lebih")).toBe("lebih");
+      expect(normalisasiStatusGizi("Gizi Lebih (Overweight)")).toBe("lebih");
+      expect(normalisasiStatusGizi("Gizi Lebih")).toBe("lebih");
+      expect(normalisasiStatusGizi("Obesitas")).toBe("obesitas");
+
+      // Kasus null, undefined, string kosong
+      expect(normalisasiStatusGizi(null)).toBe("normal");
+      expect(normalisasiStatusGizi(undefined)).toBe("normal");
+      expect(normalisasiStatusGizi("")).toBe("normal");
+      expect(normalisasiStatusGizi("—")).toBe("normal");
+    });
+
+    it("menormalisasi semua variasi nilai status_pertumbuhan (M2-010: data_baru/null dipertahankan, bukan naik)", () => {
+      expect(normalisasiStatusPertumbuhan("naik")).toBe("naik");
+      expect(normalisasiStatusPertumbuhan("Naik (N) ✅")).toBe("naik");
+      expect(normalisasiStatusPertumbuhan("N")).toBe("naik");
+
+      // M2-010: tanpa baseline JANGAN diklaim "naik".
+      expect(normalisasiStatusPertumbuhan("data_baru")).toBe("data_baru");
+
+      expect(normalisasiStatusPertumbuhan("tidak_naik")).toBe("tidak_naik");
+      expect(normalisasiStatusPertumbuhan("Tidak Naik (T) ⚠️")).toBe("tidak_naik");
+      expect(normalisasiStatusPertumbuhan("T")).toBe("tidak_naik");
+      expect(normalisasiStatusPertumbuhan("stagnan")).toBe("tidak_naik");
+
+      expect(normalisasiStatusPertumbuhan("turun")).toBe("turun");
+
+      expect(normalisasiStatusPertumbuhan(null)).toBeNull();
+      expect(normalisasiStatusPertumbuhan(undefined)).toBeNull();
+      expect(normalisasiStatusPertumbuhan("")).toBeNull();
+    });
+
+    it("memastikan parseNumberOrNull mengubah string kosong menjadi null dan angka tetap valid", () => {
+      expect(parseNumberOrNull("")).toBeNull();
+      expect(parseNumberOrNull(null)).toBeNull();
+      expect(parseNumberOrNull(undefined)).toBeNull();
+      expect(parseNumberOrNull("abc")).toBeNull();
+
+      expect(parseNumberOrNull(0)).toBe(0);
+      expect(parseNumberOrNull("0")).toBe(0);
+      expect(parseNumberOrNull(12.5)).toBe(12.5);
+      expect(parseNumberOrNull("12.5")).toBe(12.5);
+      expect(parseNumberOrNull("-1.25")).toBe(-1.25);
     });
   });
 });

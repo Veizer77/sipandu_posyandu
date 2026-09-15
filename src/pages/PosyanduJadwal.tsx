@@ -4,7 +4,7 @@
  */
 import React, { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { CalendarDays, Plus, MapPin, Play, Users, Loader2 } from "lucide-react";
+import { CalendarDays, Plus, MapPin, Play, Users, Loader2, RefreshCw } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useSipandu } from "@/lib/data-store";
 
@@ -24,38 +24,63 @@ const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
 export default function PosyanduJadwal() {
   const { showToast, currentUser } = useAuth();
   const navigate = useNavigate();
-  const { data, tambahJadwal, updateJadwalStatus, tutupSesiHariH } = useSipandu();
+  const { data, tambahJadwal, updateJadwalStatus, tutupSesiHariH, sinkronkanDataKeCloud, isLoadingDb } = useSipandu();
   const [showBuat, setShowBuat] = useState(false);
 
   const roleMejaPath =
     currentUser?.peran === "super_admin"
       ? "/admin/meja1"
       : currentUser?.peran === "bidan"
-      ? "/bidan/meja1"
-      : "/kader/meja1";
+        ? "/bidan/meja1"
+        : "/kader/meja1";
 
   // S2: dialog "Mulai Alur 5 Meja" (ref legacy posyandu: buat jadwal = langsung aktif)
   const [showMulai, setShowMulai] = useState(false);
   const [mulaiJudul, setMulaiJudul] = useState("");
   const [mulaiMulai, setMulaiMulai] = useState(false);
+  const [mulaiSasaran, setMulaiSasaran] = useState<string[]>([]);
 
   const [tanggal, setTanggal] = useState(new Date().toISOString().split("T")[0]);
   const [jenis, setJenis] = useState("bulanan");
   const [tema, setTema] = useState("");
   const [tempat, setTempat] = useState("Balai RW 06 Flamboyan");
   const [catatan, setCatatan] = useState("");
+  const [buatSasaran, setBuatSasaran] = useState<string[]>([]);
 
   const sesiAktif = data.jadwal.find((j: any) => j.status === "aktif");
   const todayISO = new Date().toISOString().split("T")[0];
 
   const hadirPerJadwal = useMemo(() => {
-    const map = new Map<string, number>();
+    const sasaranMap = new Map<string, Set<string>>();
+    const umumMap = new Map<string, Set<string>>();
+    const anggotaMap = new Map<string, any>();
+    data.anggota.forEach((a: any) => anggotaMap.set(a.id, a));
+
     [...data.kunjungan, ...data.kunjunganAktif].forEach((k: any) => {
       const jid = k.jadwal_posyandu_id || k.jadwal_id;
-      if (jid) map.set(jid, (map.get(jid) || 0) + 1);
+      if (!jid || !k.anggota_id) return;
+      const ang = anggotaMap.get(k.anggota_id);
+      if (ang?.kategori === "umum") {
+        if (!umumMap.has(jid)) umumMap.set(jid, new Set());
+        umumMap.get(jid)!.add(k.anggota_id);
+      } else {
+        if (!sasaranMap.has(jid)) sasaranMap.set(jid, new Set());
+        sasaranMap.get(jid)!.add(k.anggota_id);
+      }
     });
-    return map;
-  }, [data.kunjungan, data.kunjunganAktif]);
+
+    const result = new Map<string, { hadirSasaran: number; hadirUmum: number; totalHadir: number }>();
+    data.jadwal.forEach((j: any) => {
+      const hadirSasaran = sasaranMap.get(j.id)?.size || 0;
+      const hadirUmum = umumMap.get(j.id)?.size || 0;
+      result.set(j.id, {
+        hadirSasaran,
+        hadirUmum,
+        totalHadir: hadirSasaran + hadirUmum,
+      });
+    });
+    return result;
+  }, [data.kunjungan, data.kunjunganAktif, data.jadwal, data.anggota]);
   const totalSasaran = data.anggota.filter((a: any) => a.status_aktif && a.kategori !== "umum").length;
 
   function defaultJudul(): string {
@@ -73,12 +98,13 @@ export default function PosyanduJadwal() {
       // Jika sudah ada sesi aktif hari ini, langsung pakai; kalau tidak, buat baru (status aktif langsung, pola legacy)
       const adaAktifHariIni = data.jadwal.some((j: any) => j.status === "aktif" && j.tanggal === todayISO);
       if (!adaAktifHariIni) {
-        // Selesaikan sesi aktif hari lain (maks 1 sesi aktif)
+        // Selesaikan sesi aktif hari lain via jalur resmi (risiko absen, arsip,
+        // sesiArsipId, audit CLOSE) — bukan sekadar flip status.
         const aktifLama = data.jadwal.find((j: any) => j.status === "aktif");
         if (aktifLama) {
-          await updateJadwalStatus(aktifLama.id, "selesai");
+          await tutupSesiHariH(aktifLama.id);
         }
-        await tambahJadwal({ tanggal: todayISO, jenis, tema: judul, tempat, catatan, status: "aktif" });
+        await tambahJadwal({ tanggal: todayISO, jenis, tema: judul, tempat, catatan, status: "aktif", sasaran: mulaiSasaran });
       }
 
       setShowMulai(false);
@@ -112,7 +138,10 @@ export default function PosyanduJadwal() {
         const riwayat = (hadirByAnggota.get(a.id) || []).sort();
         const pernahHadir = riwayat.length > 0;
         const kunTerakhir = [...data.kunjungan].reverse().find((k: any) => k.anggota_id === a.id);
-        const is2T = kunTerakhir?.risiko?.some((r: string) => String(r).includes("2T"));
+        // C-07: risiko berbentuk objek {kode_risiko/kode/deskripsi/...}, bukan string.
+        const is2T = Array.isArray(kunTerakhir?.risiko) && kunTerakhir.risiko.some((r: any) =>
+          [r?.kode_risiko, r?.kode, r?.deskripsi, r?.judul].some((f: any) => String(f || "").includes("2T"))
+        );
         if (is2T) {
           return { nama: a.nama, kategori: a.kategori, alasan: "Status 2T pada kunjungan terakhir" };
         }
@@ -142,7 +171,7 @@ export default function PosyanduJadwal() {
       }
     }
 
-    await tambahJadwal({ tanggal, jenis, tema: tema.trim() || defaultJudul(), tempat, catatan });
+    await tambahJadwal({ tanggal, jenis, tema: tema.trim() || defaultJudul(), tempat, catatan, sasaran: buatSasaran });
     showToast(`Jadwal Posyandu ${tanggal} berhasil dibuat.`, "success");
     setShowBuat(false);
     setTema("");
@@ -180,6 +209,26 @@ export default function PosyanduJadwal() {
                 />
                 <p className="text-[10px] text-gray-400 mt-1">Kosongkan untuk pakai judul default. Tanggal: {new Date().toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</p>
               </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">Target Sasaran Warga</label>
+                <div className="flex flex-wrap gap-2">
+                  {["bayi", "balita", "ibu_hamil", "lansia", "wus"].map((kat) => (
+                    <label key={kat} className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={mulaiSasaran.includes(kat)}
+                        onChange={(e) => {
+                          if (e.target.checked) setMulaiSasaran((prev) => [...prev, kat]);
+                          else setMulaiSasaran((prev) => prev.filter((k) => k !== kat));
+                        }}
+                        className="rounded text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <span className="text-xs text-gray-700 capitalize">{kat.replace("_", " ")}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1">Biarkan kosong jika ini Posyandu umum (ILP semua kategori).</p>
+              </div>
               <div className="flex justify-end gap-2 pt-1">
                 <button
                   type="button"
@@ -209,6 +258,15 @@ export default function PosyanduJadwal() {
           <p className="text-sm text-gray-500">Pelayanan Posyandu ILP Flamboyan RW 06 bulanan & khusus</p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => sinkronkanDataKeCloud()}
+            disabled={isLoadingDb}
+            title="Klik untuk menyinkronkan data pemeriksaan sesi hari ini ke database cloud InsForge"
+            className="px-4 py-2.5 bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-700 font-semibold rounded-xl text-sm shadow-xs flex items-center gap-2 cursor-pointer disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${isLoadingDb ? "animate-spin text-sky-600" : "text-sky-500"}`} />
+            <span>{isLoadingDb ? "Menyinkronkan..." : "Sinkronkan ke Cloud"}</span>
+          </button>
           <button
             onClick={() => setShowBuat((v) => !v)}
             className="px-4 py-2.5 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-semibold rounded-xl text-sm shadow-sm flex items-center gap-2"
@@ -291,6 +349,26 @@ export default function PosyanduJadwal() {
                 className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm"
               />
             </div>
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-bold text-gray-700 mb-1">Target Sasaran Warga</label>
+              <div className="flex flex-wrap gap-2">
+                {["bayi", "balita", "ibu_hamil", "lansia", "wus"].map((kat) => (
+                  <label key={kat} className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={buatSasaran.includes(kat)}
+                      onChange={(e) => {
+                        if (e.target.checked) setBuatSasaran((prev) => [...prev, kat]);
+                        else setBuatSasaran((prev) => prev.filter((k) => k !== kat));
+                      }}
+                      className="rounded text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <span className="text-xs text-gray-700 capitalize">{kat.replace("_", " ")}</span>
+                  </label>
+                ))}
+              </div>
+              <p className="text-[10px] text-gray-400 mt-1">Biarkan kosong jika ini Posyandu umum (ILP semua kategori).</p>
+            </div>
           </div>
           <div className="flex justify-end">
             <button
@@ -340,8 +418,8 @@ export default function PosyanduJadwal() {
         {data.jadwal.map((j: any) => {
           const tgl = new Date(j.tanggal);
           const st = STATUS_LABEL[j.status] || STATUS_LABEL.selesai;
-          const hadir = hadirPerJadwal.get(j.id) || 0;
-          const persen = totalSasaran > 0 ? Math.min(100, Math.round((hadir / totalSasaran) * 100)) : 0;
+          const stats = hadirPerJadwal.get(j.id) || { hadirSasaran: 0, hadirUmum: 0, totalHadir: 0 };
+          const persen = totalSasaran > 0 ? Math.min(100, Math.round((stats.hadirSasaran / totalSasaran) * 100)) : 0;
           return (
             <div
               key={j.id}
@@ -412,9 +490,18 @@ export default function PosyanduJadwal() {
 
               {/* Progress kehadiran per sesi (ref legacy posyandu) */}
               <div className="pt-1">
-                <div className="flex justify-between items-center mb-1.5">
+                <div className="flex justify-between items-center mb-1.5 flex-wrap gap-1">
                   <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Tingkat Kehadiran</span>
-                  <span className="text-xs font-bold text-gray-700">{hadir} <span className="text-gray-400 font-medium">/ {totalSasaran} sasaran</span></span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-bold text-gray-700">
+                      {stats.hadirSasaran} <span className="text-gray-400 font-medium">/ {totalSasaran} sasaran</span>
+                    </span>
+                    {stats.hadirUmum > 0 && (
+                      <span className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-semibold rounded-full">
+                        +{stats.hadirUmum} umum
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
                   <div

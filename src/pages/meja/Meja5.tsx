@@ -1,161 +1,305 @@
 /**
  * SIPANDU - Meja 5: Edukasi & Penyuluhan Kelompok
  * Sesuai PRD v3.0.0 Bab 9 (F-06 Meja 5) & Alur 5 Meja ILP Kemenkes
+ *
+ * PERBAIKAN AUDIT MEJA-5 (MEJA-5-AUDIT.md):
+ * - M5-001/M5-002: tanpa fallback jadwal[0]/UUID; tepat satu sesi aktif.
+ * - M5-003/M5-024: guard sesi + config error multi-sesi.
+ * - M5-004/M5-006/M5-014: persist ditunggu; navigasi hanya pasca-sukses; error bertahan.
+ * - M5-005: hadirCount session-scoped unik.
+ * - M5-007: isSaving + unique (sesi, tema) + info bila sudah tercatat.
+ * - M5-008/M5-020: filter sesi tanpa fallthrough (helper + Rekap).
+ * - M5-009: form kosong default; template eksplisit.
+ * - M5-010: jumlah default = hadirCount (tanpa minimum 15).
+ * - M5-011: edit/delete per item + audit (di store).
+ * - M5-012/M5-027: KPI hanya dari data tersimpan.
+ * - M5-013: isSaving + disable.
+ * - M5-015: permission Kader+Bidan (PKK/Kades read-only).
+ * - M5-016/M5-017: audit pasca-sukses; ID dari server.
+ * - M5-019: error baca dibedakan + retry.
+ * - M5-021: template diurutkan relevansi demografi.
+ * - M5-022/M5-023: konfirmasi submit + unsaved warning.
+ * - M5-025/M5-026: batas panjang + timestamp riwayat.
+ * - M5-028/M5-029: split file + field canonical.
  */
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import {
-  Megaphone,
-  Users,
   CheckCircle2,
   Sparkles,
-  BookOpen,
   ArrowRight,
-  FileText,
-  HeartPulse,
-  Baby,
-  ShieldAlert,
-  GraduationCap
+  CalendarX2,
+  AlertTriangle,
 } from "lucide-react";
-import { MejaStepper } from "@/components/meja/MejaShared";
+import { MejaStepper, CategoryBadge } from "@/components/meja/MejaShared";
+import { Meja5Form, type Meja5FormValues } from "@/components/meja/Meja5Form";
+import { Meja5History } from "@/components/meja/Meja5History";
 import { useAuth } from "@/lib/auth-context";
-import { getRolePrefix } from "@/lib/role-routes";
+import { getRolePrefix, getRoleMenuPath } from "@/lib/role-routes";
 import { useSipandu } from "@/lib/data-store";
+import { getAllSessionVisits } from "@/lib/meja1Logic";
+import {
+  TEMPLATES_KEMENKES,
+  rankTemplatesByHadir,
+  countHadirUnik,
+  getPenyuluhanSesi,
+  validatePenyuluhan,
+  canManagePenyuluhan,
+  type PenyuluhanTemplate,
+} from "@/lib/meja5Logic";
 
-const TEMPLATES_KEMENKES = [
-  {
-    kategori: "Balita & Baduta",
-    icon: Baby,
-    color: "amber",
-    tema: "Pencegahan Stunting: MPASI Kaya Protein Hewani & Kapsul Vitamin A",
-    ringkasan: "Edukasi pentingnya pemberian protein hewani (telur, ikan air tawar, daging ayam) pada setiap porsi MPASI balita usia 6-23 bulan, serta kepatuhan vitamin A dosis tinggi di bulan Februari dan Agustus.",
-    metode: "Ceramah & Demonstrasi",
-    media: "Lembar Balik & Sampel Pangan Lokal",
-  },
-  {
-    kategori: "Ibu Hamil",
-    icon: HeartPulse,
-    color: "rose",
-    tema: "Pencegahan Anemia & KEK: Kepatuhan Konsumsi Tablet Tambah Darah (TTD)",
-    ringkasan: "Penyuluhan kepatuhan minum TTD minimal 90 tablet selama kehamilan dengan air putih/jeruk, pemenuhan gizi seimbang, dan pengukuran LILA rutin untuk mencegah bayi lahir BBLR.",
-    metode: "Konseling Kelompok & Diskusi",
-    media: "Buku KIA & Leaflet Nutrisi Bumil",
-  },
-  {
-    kategori: "Imunisasi",
-    icon: ShieldAlert,
-    color: "blue",
-    tema: "Pentingnya Imunisasi Dasar Lengkap & Pemantauan KMS Digital",
-    ringkasan: "Sosialisasi jadwal imunisasi dasar lengkap (HB-0 s.d. MR Booster), manfaat kurva KMS untuk deteksi dini balita tidak naik berat badan (2T) sebelum terjadi risiko stunting.",
-    metode: "Ceramah & Tanya Jawab",
-    media: "Poster Jadwal Imunisasi Kemenkes",
-  },
-  {
-    kategori: "Lansia & Dewasa",
-    icon: GraduationCap,
-    color: "purple",
-    tema: "Pengendalian Hipertensi & Diabetes Melalui Gerakan CERDIK",
-    ringkasan: "Edukasi pembatasan asupan gula, garam, dan lemak (GGL), pentingnya aktivitas fisik 30 menit per hari, serta kepatuhan skrining tekanan darah dan gula darah sewaktu.",
-    metode: "Ceramah & Diskusi",
-    media: "Brosur CERDIK & Panduan Diet Rendah Garam",
-  },
-];
+const EMPTY_VALUES: Meja5FormValues = {
+  tema: "",
+  narasumber: "",
+  jumlah: "",
+  metode: "Ceramah & Demonstrasi",
+  media: "",
+  ringkasan: "",
+};
 
 export default function Meja5() {
   const navigate = useNavigate();
   const { showToast, currentRole } = useAuth();
   const rolePrefix = getRolePrefix(currentRole);
-  const { data, tambahPenyuluhan } = useSipandu();
+  const jadwalUrl = getRoleMenuPath("/posyandu", currentRole);
+  const { data, activeSessionId, tambahPenyuluhan, ubahPenyuluhan, hapusPenyuluhan, refreshFromDb } = useSipandu();
 
-  const sesiAktif = data.jadwal.find((j: any) => j.status === "aktif") || data.jadwal[0];
-  const hadirCount = data.kunjunganAktif.length;
+  const multipleActive = (data.jadwal || []).filter((j: any) => j?.status === "aktif").length > 1;
+  const canManage = canManagePenyuluhan(currentRole);
+  const sesiAktif = (data.jadwal || []).find((j: any) => j.id === activeSessionId) || null;
 
-  const savedPenyuluhan = useMemo(() => {
-    return (data.penyuluhan || []).filter(
-      (p: any) => !sesiAktif?.id || p.jadwal_id === sesiAktif.id || p.jadwal_posyandu_id === sesiAktif.id
-    );
-  }, [data.penyuluhan, sesiAktif]);
-
-  const [tema, setTema] = useState("Pencegahan Stunting: MPASI Kaya Protein Hewani & Kapsul Vitamin A");
-  const [narasumber, setNarasumber] = useState("Bdn. Siti Aminah, S.Tr.Keb & Kader Flamboyan");
-  const [jumlah, setJumlah] = useState<number>(() => Math.max(hadirCount, 15));
-  const [metode, setMetode] = useState("Ceramah & Demonstrasi");
-  const [media, setMedia] = useState("Lembar Balik & Buku KIA");
-  const [ringkasan, setRingkasan] = useState(
-    "Sesi edukasi menekankan pentingnya ASI eksklusif 6 bulan, MPASI kaya protein hewani (telur, ikan, daging ayam), serta kepatuhan kapsul Vitamin A dosis tinggi. Kader membagikan buku panduan gizi dan mempraktikkan pengolahan makanan lumat berprotein."
+  // M5-005/M5-008: session-scoped visits & penyuluhan (tanpa fallthrough).
+  const sessionVisits = useMemo(
+    () => getAllSessionVisits(data.kunjunganAktif, data.kunjungan, activeSessionId),
+    [data.kunjunganAktif, data.kunjungan, activeSessionId]
   );
-  const [activeTemplateIdx, setActiveTemplateIdx] = useState<number | null>(0);
+  const hadirCount = useMemo(() => countHadirUnik(sessionVisits), [sessionVisits]);
+  const hadirKategoris = useMemo(() => {
+    const byId = new Map<string, string>();
+    (data.anggota || []).forEach((a: any) => byId.set(a.id, a.kategori));
+    const set = new Set<string>();
+    sessionVisits.forEach((k: any) => {
+      const kat = byId.get(k.anggota_id);
+      if (kat) set.add(kat);
+    });
+    return Array.from(set);
+  }, [sessionVisits, data.anggota]);
 
-  const totalPesertaTerpapar = useMemo(() => {
-    const fromSaved = savedPenyuluhan.reduce((acc: number, p: any) => acc + (Number(p.jumlah_peserta ?? p.jumlah) || 0), 0);
-    return Math.max(fromSaved, jumlah);
-  }, [savedPenyuluhan, jumlah]);
+  const savedPenyuluhan = useMemo(
+    () => getPenyuluhanSesi(data.penyuluhan, activeSessionId),
+    [data.penyuluhan, activeSessionId]
+  );
+  // M5-012/M5-027: KPI HANYA dari data tersimpan.
+  const totalPesertaTerpapar = useMemo(
+    () => savedPenyuluhan.reduce((acc: number, p: any) => acc + (Number(p.jumlah_peserta ?? p.jumlah) || 0), 0),
+    [savedPenyuluhan]
+  );
 
-  function handleApplyTemplate(tmpl: typeof TEMPLATES_KEMENKES[0], idx: number) {
-    setActiveTemplateIdx(idx);
-    setTema(tmpl.tema);
-    setRingkasan(tmpl.ringkasan);
-    setMetode(tmpl.metode);
-    setMedia(tmpl.media);
+  const rankedTemplates = useMemo(
+    () => rankTemplatesByHadir(TEMPLATES_KEMENKES, hadirKategoris),
+    [hadirKategoris]
+  );
+
+  // F-05: peserta tahap meja_5 (klinis selesai, menunggu finalisasi tutup sesi).
+  // Tidak tampil di antrean Meja 2-4; terlihat di sini + Rekap.
+  const menungguFinalisasi = useMemo(
+    () => sessionVisits.filter((k: any) => k?.status_alur === "meja_5_penyuluhan"),
+    [sessionVisits]
+  );
+  const anggotaById = useMemo(() => {
+    const m = new Map<string, any>();
+    (data.anggota || []).forEach((a: any) => m.set(a.id, a));
+    return m;
+  }, [data.anggota]);
+
+  const [values, setValues] = useState<Meja5FormValues>(EMPTY_VALUES);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+  const [confirmArmed, setConfirmArmed] = useState(false);
+  const [leaveArmed, setLeaveArmed] = useState(false);
+  const [activeTemplateIdx, setActiveTemplateIdx] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteArmedId, setDeleteArmedId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const isSavingRef = useRef(false);
+
+  // M5-010: jumlah default = hadirCount saat form masih pristine.
+  useEffect(() => {
+    if (!isDirty && editingId === null && hadirCount > 0) {
+      setValues((v) => (v.jumlah === "" ? { ...v, jumlah: hadirCount } : v));
+    }
+  }, [hadirCount, isDirty, editingId]);
+
+  // M5-023: warning tutup/refresh tab saat dirty.
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isDirty]);
+
+  function onChange(patch: Partial<Meja5FormValues>) {
+    setIsDirty(true);
+    setConfirmArmed(false);
+    setSubmitError(null);
+    setLeaveArmed(false);
+    setFieldErrors((prev) => {
+      if (Object.keys(prev).length === 0) return prev;
+      const next = { ...prev };
+      for (const k of Object.keys(patch)) delete next[k];
+      return next;
+    });
+    setValues((v) => ({ ...v, ...patch }));
+  }
+
+  function handleApplyTemplate(tmpl: PenyuluhanTemplate & { relevan: boolean }, rankIdx: number) {
+    setActiveTemplateIdx(rankIdx);
+    setIsDirty(true);
+    setConfirmArmed(false);
+    setSubmitError(null);
+    setValues((v) => ({
+      ...v,
+      tema: tmpl.tema,
+      ringkasan: tmpl.ringkasan,
+      metode: tmpl.metode,
+      media: tmpl.media,
+    }));
     showToast(`Template "${tmpl.tema.slice(0, 32)}..." diterapkan`, "info");
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  function resetForm() {
+    setValues(EMPTY_VALUES);
+    setFieldErrors({});
+    setSubmitError(null);
+    setConfirmArmed(false);
+    setLeaveArmed(false);
+    setIsDirty(false);
+    setActiveTemplateIdx(null);
+    setEditingId(null);
+  }
+
+  // M5-022: dua tahap — validasi + preview konfirmasi, lalu eksekusi.
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const trimmedTema = tema.trim();
-    if (!trimmedTema) {
-      showToast("Tema penyuluhan wajib diisi.", "warning");
-      return;
-    }
-    if (trimmedTema.length < 5) {
-      showToast("Tema penyuluhan minimal 5 karakter (sesuai standar PRD Bab 15.3).", "warning");
-      return;
-    }
-    if (trimmedTema.length > 200) {
-      showToast("Tema penyuluhan maksimal 200 karakter (sesuai PRD Bab 9 & 13).", "warning");
-      return;
-    }
+    if (isSavingRef.current) return;
 
-    const trimmedNarasumber = narasumber.trim();
-    if (!trimmedNarasumber) {
-      showToast("Narasumber penyuluhan wajib diisi.", "warning");
-      return;
-    }
-    if (trimmedNarasumber.length > 100) {
-      showToast("Nama narasumber maksimal 100 karakter (PRD Bab 13.1).", "warning");
-      return;
-    }
-
-    const numJumlah = Number(jumlah);
-    if (!numJumlah || numJumlah < 1) {
-      showToast("Jumlah peserta minimal 1 orang (PRD Bab 15.3).", "warning");
-      return;
-    }
-
-    tambahPenyuluhan({
-      jadwal_id: sesiAktif?.id,
-      jadwal_posyandu_id: sesiAktif?.id,
-      sesi_id: sesiAktif?.id,
-      tema: trimmedTema,
-      narasumber: trimmedNarasumber,
-      jumlah_peserta: numJumlah,
-      jumlah: numJumlah,
-      metode,
-      media: media.trim(),
-      ringkasan: ringkasan.trim(),
-      waktu: new Date().toISOString(),
-      tanggal: new Date().toISOString(),
+    const validation = validatePenyuluhan({
+      tema: values.tema,
+      narasumber: values.narasumber,
+      jumlah_peserta: values.jumlah,
+      metode: values.metode,
+      media: values.media,
+      ringkasan: values.ringkasan,
     });
-    showToast("Dokumentasi penyuluhan berhasil disimpan ke rekapitulasi sesi!", "success");
-    navigate(`${rolePrefix}/rekap`);
+    if (!validation.valid) {
+      setFieldErrors(validation.errors);
+      const msg = validation.firstError || "Periksa kembali isian form.";
+      setSubmitError(msg);
+      showToast(msg, "warning");
+      return;
+    }
+    setFieldErrors({});
+    setSubmitError(null);
+
+    if (!confirmArmed) {
+      setConfirmArmed(true);
+      return;
+    }
+
+    isSavingRef.current = true;
+    setIsSaving(true);
+    try {
+      if (editingId) {
+        const row = await ubahPenyuluhan(editingId, validation.value);
+        resetForm();
+        showToast(`Penyuluhan "${String(row.tema).slice(0, 40)}..." diperbarui.`, "success");
+      } else {
+        const { action } = await tambahPenyuluhan(validation.value);
+        resetForm();
+        if (action === "existed") {
+          showToast("Tema ini sudah tercatat pada sesi ini — menampilkan data yang ada.", "info");
+        } else {
+          showToast("Dokumentasi penyuluhan berhasil disimpan ke rekapitulasi sesi!", "success");
+        }
+        // M5-014: navigasi hanya setelah persist sukses.
+        navigate(`${rolePrefix}/rekap`);
+      }
+    } catch (err: any) {
+      const msg = err?.message || "Gagal menyimpan penyuluhan. Form tetap — coba lagi.";
+      setSubmitError(msg);
+      showToast(msg, "danger");
+    } finally {
+      isSavingRef.current = false;
+      setIsSaving(false);
+      setConfirmArmed(false);
+    }
+  }
+
+  function handleEdit(item: any) {
+    setEditingId(item.id);
+    setIsDirty(true);
+    setConfirmArmed(false);
+    setSubmitError(null);
+    setActiveTemplateIdx(null);
+    setValues({
+      tema: item.tema || "",
+      narasumber: item.narasumber || "",
+      jumlah: Number(item.jumlah_peserta ?? item.jumlah) || "",
+      metode: item.metode || "Ceramah & Demonstrasi",
+      media: item.media || "",
+      ringkasan: item.ringkasan || "",
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function handleDelete(id: string) {
+    if (deleteArmedId !== id) {
+      setDeleteArmedId(id);
+      return;
+    }
+    setDeleting(true);
+    try {
+      await hapusPenyuluhan(id);
+      setDeleteArmedId(null);
+      if (editingId === id) resetForm();
+      showToast("Dokumentasi penyuluhan dihapus.", "success");
+    } catch {
+      // Toast error sudah dari store; armed tetap agar bisa coba lagi.
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  if (!activeSessionId) {
+    return (
+      <div className="p-4 sm:p-8 space-y-6">
+        <MejaStepper activeMeja={5} />
+        <div className="bg-white p-12 rounded-2xl border border-gray-100 shadow-sm text-center">
+          <CalendarX2 className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+          <p className="text-sm font-bold text-gray-700">
+            {multipleActive ? "Terdeteksi Lebih dari Satu Sesi Aktif" : "Belum Ada Sesi Posyandu Aktif"}
+          </p>
+          <p className="text-xs text-gray-400 mt-1 max-w-md mx-auto">
+            {multipleActive
+              ? "Tutup/akhiri sesi ganda di halaman Jadwal Posyandu agar dokumentasi tidak salah sesi."
+              : "Buka sesi hari H di halaman Jadwal Posyandu terlebih dahulu."}
+          </p>
+          <Link to={jadwalUrl} className="mt-4 inline-block px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-semibold">
+            Buka Jadwal Posyandu
+          </Link>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="p-4 sm:p-8 space-y-6">
-      {/* Stepper Navigation */}
       <MejaStepper activeMeja={5} />
 
-      {/* Status Header Sesi & Twin KPI Box (Serasi dengan Meja 1-4) */}
       <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <div className="inline-flex items-center gap-2 px-3 py-0.5 bg-teal-100 text-teal-800 rounded-full text-xs font-semibold mb-1">
@@ -178,239 +322,136 @@ export default function Meja5() {
         </div>
       </div>
 
-      {/* Split Layout: 7 Cols Form + 5 Cols Panduan & Riwayat */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Column: Form Dokumentasi Edukasi */}
         <div className="lg:col-span-7 bg-white p-6 sm:p-7 rounded-3xl border border-gray-100 shadow-sm space-y-6">
-          <div className="border-b border-gray-100 pb-4 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-2xl bg-teal-50 text-teal-700 flex items-center justify-center shadow-xs">
-                <Megaphone className="w-5 h-5" />
-              </div>
-              <div>
-                <h2 className="text-base sm:text-lg font-bold text-gray-900">Formulir Penyuluhan Hari Ini</h2>
-                <p className="text-xs text-gray-500">Isi data kegiatan atau pilih template materi standar Kemenkes di bawah</p>
-              </div>
+          {!canManage ? (
+            <div className="p-6 text-center bg-gray-50/70 border border-dashed border-gray-200 rounded-2xl">
+              <p className="text-xs font-bold text-gray-700">Mode baca saja</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">
+                Dokumentasi penyuluhan hanya dapat dikelola Kader/Bidan/Admin. Riwayat sesi tampil di samping.
+              </p>
             </div>
-          </div>
-
-          {/* Quick Template Selector */}
-          <div className="space-y-2">
-            <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-amber-500" /> Template Cepat Materi ILP Kemenkes
-            </label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {TEMPLATES_KEMENKES.map((t, idx) => {
-                const Icon = t.icon;
-                const isSelected = activeTemplateIdx === idx;
-                return (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => handleApplyTemplate(t, idx)}
-                    className={`p-3 rounded-2xl text-left border transition flex items-start gap-2.5 ${
-                      isSelected
-                        ? "bg-teal-50/80 border-teal-500 ring-2 ring-teal-500/10 shadow-xs"
-                        : "bg-gray-50/70 border-gray-200/80 hover:bg-gray-50"
-                    }`}
-                  >
-                    <div className="w-7 h-7 rounded-xl bg-white text-teal-700 flex items-center justify-center shrink-0 shadow-xs mt-0.5">
-                      <Icon className="w-4 h-4" />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-teal-700 bg-teal-100/70 px-1.5 py-0.2 rounded">
-                          {t.kategori}
-                        </span>
-                        {isSelected && <span className="text-[10px] font-bold text-emerald-600">✓ Aktif</span>}
-                      </div>
-                      <p className="text-xs font-bold text-gray-900 mt-1 line-clamp-2 leading-tight">
-                        {t.tema}
-                      </p>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Actual Form Fields */}
-          <form onSubmit={handleSubmit} className="space-y-4 pt-1">
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">
-                  Tema / Topik Penyuluhan <span className="text-rose-500">*</span>
-                </label>
-                <span className={`text-[10px] font-semibold ${tema.length < 5 || tema.length > 200 ? 'text-amber-600 font-bold' : 'text-gray-400'}`}>
-                  {tema.length}/200 karakter (min 5)
-                </span>
-              </div>
-              <textarea
-                rows={2}
-                value={tema}
-                minLength={5}
-                maxLength={200}
-                onChange={(e) => setTema(e.target.value)}
-                placeholder="Tuliskan topik penyuluhan yang dibawakan (min. 5 karakter)..."
-                required
-                className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:border-teal-500 focus:ring-2 focus:ring-teal-100 text-sm font-semibold text-gray-900 outline-none transition"
+          ) : (
+            <form onSubmit={handleSubmit} className="space-y-6">
+              <Meja5Form
+                values={values}
+                onChange={onChange}
+                fieldErrors={fieldErrors}
+                hadirCount={hadirCount}
+                rankedTemplates={rankedTemplates}
+                activeTemplateIdx={activeTemplateIdx}
+                onApplyTemplate={handleApplyTemplate}
+                disabled={isSaving}
+                isEditing={editingId !== null}
               />
-            </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-                  Narasumber / Fasilitator <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={narasumber}
-                  maxLength={100}
-                  onChange={(e) => setNarasumber(e.target.value)}
-                  placeholder="Nama bidan / kader pembicara..."
-                  required
-                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:border-teal-500 text-xs sm:text-sm font-medium outline-none transition"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5 flex items-center justify-between">
-                  <span>Jumlah Peserta Hadir <span className="text-rose-500">*</span></span>
-                  {hadirCount > 0 && (
-                    <span className="text-[10px] font-semibold text-teal-600">Hadir Meja 1: {hadirCount}</span>
-                  )}
-                </label>
-                <div className="relative">
-                  <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400">
-                    <Users className="w-4 h-4" />
-                  </div>
-                  <input
-                    type="number"
-                    min={1}
-                    value={jumlah}
-                    onChange={(e) => setJumlah(parseInt(e.target.value || "0"))}
-                    required
-                    className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:border-teal-500 text-xs sm:text-sm font-bold text-gray-900 outline-none transition"
-                  />
+              {submitError && (
+                <div className="bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold rounded-xl px-4 py-3">
+                  {submitError}
                 </div>
-              </div>
-            </div>
+              )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-                  Metode Penyuluhan (PRD)
-                </label>
-                <select
-                  value={metode}
-                  onChange={(e) => setMetode(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:border-teal-500 text-xs sm:text-sm font-medium outline-none transition"
+              {confirmArmed && (
+                <div className="bg-teal-50/70 border border-teal-200 rounded-2xl p-4 text-xs space-y-2">
+                  <p className="font-bold text-teal-900">Konfirmasi penyuluhan sesi ini:</p>
+                  <ul className="text-teal-900 space-y-0.5">
+                    <li><strong>Tema:</strong> {values.tema}</li>
+                    <li><strong>Narasumber:</strong> {values.narasumber} · <strong>Peserta:</strong> {values.jumlah} orang</li>
+                    <li><strong>Metode:</strong> {values.metode}{values.media ? ` · ${values.media}` : ""}</li>
+                  </ul>
+                </div>
+              )}
+
+              <div className="pt-3 flex items-center justify-between gap-3 border-t border-gray-100">
+                <div className="flex items-center gap-2">
+                  {editingId && (
+                    <button
+                      type="button"
+                      onClick={resetForm}
+                      className="px-4 py-2.5 border border-gray-200 hover:bg-gray-50 text-gray-700 font-semibold rounded-xl text-xs transition"
+                    >
+                      Batal ubah
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isDirty && !leaveArmed) {
+                        setLeaveArmed(true);
+                        return;
+                      }
+                      navigate(`${rolePrefix}/rekap`);
+                    }}
+                    className="px-4 py-2.5 border border-gray-200 hover:bg-gray-50 text-gray-700 font-semibold rounded-xl text-xs transition"
+                  >
+                    {isDirty && !leaveArmed ? "Belum disimpan — klik lagi untuk tinggalkan" : "Lewati & Buka Rekap →"}
+                  </button>
+                </div>
+                <button
+                  type="submit"
+                  disabled={isSaving}
+                  className="px-6 py-2.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 disabled:bg-teal-300 disabled:cursor-not-allowed text-white font-bold rounded-xl text-xs sm:text-sm shadow-md shadow-teal-600/20 transition flex items-center gap-2"
                 >
-                  <option>Ceramah & Demonstrasi</option>
-                  <option>Ceramah</option>
-                  <option>Demonstrasi</option>
-                  <option>Diskusi</option>
-                  <option>Konseling Kelompok & Diskusi</option>
-                  <option>Konseling Perorangan Antarpribadi</option>
-                  <option>Simulasi & Praktik Langsung</option>
-                  <option>Pemutaran Video & Diskusi</option>
-                  <option>Lainnya</option>
-                </select>
+                  <CheckCircle2 className="w-4 h-4" />
+                  {isSaving ? "Menyimpan…" : confirmArmed ? "Ya, simpan penyuluhan" : editingId ? "Simpan perubahan" : "Simpan & Lanjut ke Rekap Sesi"}
+                </button>
               </div>
-
-              <div>
-                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-                  Media / Alat Bantu KIE
-                </label>
-                <input
-                  type="text"
-                  value={media}
-                  onChange={(e) => setMedia(e.target.value)}
-                  placeholder="Contoh: Lembar Balik, Leaflet, Poster, Buku KIA..."
-                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:border-teal-500 text-xs sm:text-sm font-medium outline-none transition"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-                Ringkasan Materi & Pesan Kunci
-              </label>
-              <textarea
-                rows={3}
-                value={ringkasan}
-                onChange={(e) => setRingkasan(e.target.value)}
-                placeholder="Poin-poin edukasi yang disampaikan kepada peserta posyandu..."
-                className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:border-teal-500 text-xs sm:text-sm leading-relaxed outline-none transition"
-              />
-            </div>
-
-            <div className="pt-3 flex items-center justify-between gap-3 border-t border-gray-100">
-              <Link
-                to={`${rolePrefix}/rekap`}
-                className="px-4 py-2.5 border border-gray-200 hover:bg-gray-50 text-gray-700 font-semibold rounded-xl text-xs transition"
-              >
-                Lewati & Buka Rekap →
-              </Link>
-              <button
-                type="submit"
-                className="px-6 py-2.5 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white font-bold rounded-xl text-xs sm:text-sm shadow-md shadow-teal-600/20 transition flex items-center gap-2"
-              >
-                <CheckCircle2 className="w-4 h-4" /> Simpan & Lanjut ke Rekap Sesi
-              </button>
-            </div>
-          </form>
+            </form>
+          )}
         </div>
 
-        {/* Right Column: Riwayat Penyuluhan Sesi & Panduan Kemenkes */}
         <div className="lg:col-span-5 space-y-6">
-          {/* Card Riwayat Penyuluhan Tersimpan */}
-          <div className="bg-white p-5 sm:p-6 rounded-3xl border border-gray-100 shadow-sm space-y-4">
-            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
-              <div className="flex items-center gap-2">
-                <BookOpen className="w-4 h-4 text-teal-600" />
-                <h3 className="font-bold text-gray-900 text-sm">Dokumentasi Sesi Aktif</h3>
-              </div>
-              <span className="text-[10px] font-bold px-2 py-0.5 bg-teal-50 text-teal-800 rounded-full border border-teal-200">
-                {savedPenyuluhan.length} Tercatat
-              </span>
-            </div>
+          <Meja5History
+            items={savedPenyuluhan}
+            loadError={data.penyuluhanError}
+            onRetry={() => refreshFromDb()}
+            canManage={canManage}
+            editingId={editingId}
+            onEdit={handleEdit}
+            deleteArmedId={deleteArmedId}
+            onDelete={handleDelete}
+            deleting={deleting}
+          />
 
-            {savedPenyuluhan.length === 0 ? (
-              <div className="p-6 text-center bg-gray-50/70 border border-dashed border-gray-200 rounded-2xl">
-                <FileText className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-                <p className="text-xs font-bold text-gray-700">Belum Ada Penyuluhan Disimpan</p>
-                <p className="text-[11px] text-gray-400 mt-0.5">
-                  Isi formulir di sebelah kiri dan klik "Simpan" untuk merekam kegiatan penyuluhan hari ini.
-                </p>
+          {menungguFinalisasi.length > 0 && (
+            <div className="bg-white p-5 sm:p-6 rounded-3xl border border-gray-100 shadow-sm space-y-3">
+              <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-sky-600" />
+                  <h3 className="font-bold text-gray-900 text-sm">Menunggu Finalisasi Sesi</h3>
+                </div>
+                <span className="text-[10px] font-bold px-2 py-0.5 bg-sky-50 text-sky-800 rounded-full border border-sky-200">
+                  {menungguFinalisasi.length} Siap Diarsipkan
+                </span>
               </div>
-            ) : (
-              <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1">
-                {savedPenyuluhan.map((p: any, idx: number) => (
-                  <div key={idx} className="p-3.5 rounded-2xl bg-teal-50/50 border border-teal-100 space-y-1.5 text-xs">
-                    <div className="flex items-start justify-between gap-2">
-                      <h4 className="font-bold text-gray-900 leading-tight">{p.tema}</h4>
-                      <span className="shrink-0 px-2 py-0.5 bg-white border border-teal-200 text-teal-800 rounded font-bold text-[10px]">
-                        {p.jumlah_peserta ?? p.jumlah} Peserta
+              <p className="text-[11px] text-gray-400">
+                Peserta ini sudah menyelesaikan Meja 1–4 dan akan ditandai selesai saat sesi ditutup.
+              </p>
+              <div className="space-y-2 max-h-[240px] overflow-y-auto pr-1">
+                {menungguFinalisasi.map((k: any) => {
+                  const a = anggotaById.get(k.anggota_id);
+                  if (!a) return null;
+                  return (
+                    <div
+                      key={k.id}
+                      className="p-3 rounded-xl bg-gray-50/70 border border-gray-100 flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <h4 className="font-bold text-gray-900 text-xs truncate">{a.nama}</h4>
+                        <div className="mt-1">
+                          <CategoryBadge kategori={a.kategori} />
+                        </div>
+                      </div>
+                      <span className="shrink-0 px-2 py-0.5 bg-sky-100 text-sky-800 text-[10px] font-bold rounded-full flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" /> Meja 5 ✓
                       </span>
                     </div>
-                    <p className="text-[11px] text-gray-600">
-                      <strong>Narasumber:</strong> {p.narasumber} · {p.metode}
-                    </p>
-                    {p.ringkasan && (
-                      <div className="bg-white/80 p-2.5 rounded-xl border border-teal-100/80 mt-1">
-                        <p className="text-[11px] text-gray-600 leading-relaxed break-words">
-                          {p.ringkasan}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
-          {/* Card Panduan Pesan Kunci 5 Siklus Hidup ILP */}
           <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white p-5 sm:p-6 rounded-3xl shadow-md space-y-3.5">
             <div className="flex items-center gap-2 text-teal-400">
               <Sparkles className="w-4 h-4" />

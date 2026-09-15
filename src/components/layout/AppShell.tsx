@@ -9,7 +9,7 @@ import {
   Bell, Home, Users, Menu, X,
   LogOut, FileText, Network, CalendarDays, UserPlus, Settings, ShieldCheck,
   LogIn, Clipboard, CheckSquare, Building2, Shield,
-  Stethoscope, AlertTriangle, Syringe,
+  Stethoscope, AlertTriangle, Syringe, RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ROLE_LABEL, useAuth } from "@/lib/auth-context";
@@ -78,7 +78,7 @@ const NOTIF_ICON: Record<string, string> = { danger: "bg-rose-500", warning: "bg
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const { currentUser, currentRole, logout, toast } = useAuth();
-  const { refreshFromDb, data, tandaiSemuaNotifikasiDibaca } = useSipandu();
+  const { refreshFromDb, sinkronkanDataKeCloud, isLoadingDb, data, tandaiSemuaNotifikasiDibaca } = useSipandu();
   const navigate = useNavigate();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -147,6 +147,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <div className="flex items-center gap-2 sm:gap-4">
+          {/* Sinkronkan Data ke Cloud Button */}
+          <button
+            onClick={() => sinkronkanDataKeCloud()}
+            disabled={isLoadingDb}
+            title="Klik untuk menyinkronkan seluruh data input lokal ke database InsForge Cloud PostgreSQL"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-700 text-xs font-semibold shadow-xs transition active:scale-95 disabled:opacity-60 cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoadingDb ? "animate-spin text-sky-600" : "text-sky-500"}`} />
+            <span className="hidden md:inline">{isLoadingDb ? "Menyinkronkan..." : "Sinkronkan ke Cloud"}</span>
+            <span className="md:hidden">{isLoadingDb ? "Sync..." : "Sync"}</span>
+          </button>
+
           {/* Database Live Status Indicator */}
           <div className="flex items-center gap-2">
             <span
@@ -156,6 +168,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
               InsForge Cloud Live
             </span>
+          </div>
+
           <div ref={notifRef} className="relative">
             <button
               className="relative w-10 h-10 rounded-2xl border border-slate-200 hover:bg-slate-100 flex items-center justify-center text-slate-600 transition"
@@ -196,7 +210,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               </div>
             )}
           </div>
-          </div>
 
           {/* Profile Pill - Foto dikelola terpusat lewat Admin */}
           <div
@@ -213,7 +226,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </button>
           </div>
         </div>
-      </header>      {/* ===== MAIN WRAPPER ===== */}
+      </header>
+
+      {/* ===== MAIN WRAPPER ===== */}
       <div className="flex-1 flex overflow-hidden min-h-0">
         {/* Desktop Sidebar */}
         <aside id="app-sidebar" className="hidden lg:flex flex-col w-64 shrink-0 border-r border-slate-200 bg-white p-4 space-y-6 overflow-y-auto no-print">

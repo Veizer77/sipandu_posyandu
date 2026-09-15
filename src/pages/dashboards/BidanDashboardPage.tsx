@@ -21,6 +21,7 @@ import { useSipandu } from "@/lib/data-store";
 import WHO_ENGINE, { hitungUsia } from "@/utils/zscoreCalculator";
 import { statusImunisasi } from "@/utils/jadwalImunisasi";
 import { buildTren6Bulan, semuaIlustrasi } from "@/lib/tren6bulan";
+import { normalizeImunisasiList } from "@/lib/meja2Logic";
 
 export default function BidanDashboardPage() {
   const { currentUser, showToast } = useAuth();
@@ -135,7 +136,7 @@ export default function BidanDashboardPage() {
     const diberikanByAnggota = new Map<string, Set<string>>();
     allVisits.forEach((k: any) => {
       const set = diberikanByAnggota.get(k.anggota_id) || new Set<string>();
-      (k?.pelayanan?.imunisasi || []).forEach((j: string) => {
+      normalizeImunisasiList(k?.pelayanan).forEach((j: string) => {
         set.add(j);
         if (counts[j] !== undefined) counts[j]++;
       });
