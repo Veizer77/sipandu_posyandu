@@ -56,7 +56,7 @@ vi.mock("@insforge/sdk", () => ({
 process.env.ECOSYSTEM_SERVICE_KEY = "test-key";
 process.env.INSFORGE_API_KEY = "test-admin";
 
-import handler from "@/../api/ecosystem/citizen-summary";
+import handler from "../citizen-summary";
 
 function mockRes() {
   const res: any = {
