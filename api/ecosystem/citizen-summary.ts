@@ -139,27 +139,70 @@ export default async function handler(req: any, res: any) {
         // Set latest metrics based on the latest visit (which is index 0)
         const pLatest = pengukuranList.find((meas: any) => meas.kunjungan_id === latestVisitId);
         if (pLatest) {
+          const isAnak = a.kategori === "bayi" || a.kategori === "balita";
+          const isBumil = a.kategori === "ibu_hamil";
+
           record.berat_badan_kg = pLatest.berat_badan ?? undefined;
           record.tinggi_badan_cm = pLatest.tinggi_badan ?? pLatest.panjang_badan ?? undefined;
           record.lingkar_kepala_cm = pLatest.lingkar_kepala ?? undefined;
-          record.z_score_bb_u = pLatest.z_score_bbu ?? undefined;
-          record.z_score_tb_u = pLatest.z_score_tbu ?? undefined;
+          record.lingkar_lengan_cm = pLatest.lingkar_lengan ?? undefined;
+          record.lingkar_perut_cm = pLatest.lingkar_perut ?? undefined;
+
+          // Z-score WHO HANYA berlaku untuk bayi/balita (0–60 bulan).
+          record.z_score_berlaku = isAnak;
+          if (isAnak) {
+            record.z_score_bb_u = pLatest.z_score_bbu ?? undefined;
+            record.z_score_tb_u = pLatest.z_score_tbu ?? undefined;
+            record.z_score_bb_tb = pLatest.z_score_bbtb ?? undefined;
+          }
+
+          // IMT/BMI: tersimpan, atau hitung dari BB/TB (untuk dewasa).
+          const bb = Number(pLatest.berat_badan);
+          const tb = Number(pLatest.tinggi_badan ?? pLatest.panjang_badan);
+          const imt: number | null =
+            pLatest.imt != null ? Number(pLatest.imt)
+            : (Number.isFinite(bb) && Number.isFinite(tb) && tb > 0 ? Number((bb / Math.pow(tb / 100, 2)).toFixed(2)) : null);
+          if (!isAnak && imt != null) {            record.imt = imt;
+            record.status_imt =
+              imt < 18.5 ? "Underweight (Kurus)" : imt < 25 ? "Normal" : imt < 30 ? "Overweight (Berlebih)" : "Obesitas";
+          }
+
+          // Bumil: status KEK dari LILA (< 23,5 cm).
+          if (isBumil && pLatest.lingkar_lengan != null) {
+            record.lila_cm = Number(pLatest.lingkar_lengan);
+            record.status_kek = Number(pLatest.lingkar_lengan) < 23.5;
+          }
+
           record.tensi_darah = (pLatest.tekanan_darah_sistol != null || pLatest.tekanan_darah_diastol != null)
             ? `${pLatest.tekanan_darah_sistol ?? "-"}/${pLatest.tekanan_darah_diastol ?? "-"}`
             : undefined;
           record.gula_darah_puasa = pLatest.gula_darah != null ? String(pLatest.gula_darah) : undefined;
 
-          if (pLatest.z_score_bbu != null) {
-            const z = pLatest.z_score_bbu;
-            record.status_gizi = z < -3 ? "Gizi Buruk" : z < -2 ? "Gizi Kurang" : z > 2 ? "Gizi Lebih" : "Normal";
-          } else if (pLatest.status_gizi) {
-            record.status_gizi = pLatest.status_gizi;
+          // Status gizi: balita -> dari Z-score; dewasa -> dari IMT; bumil -> tidak berlaku.
+          if (isAnak) {
+            if (pLatest.z_score_bbu != null) {
+              const z = Number(pLatest.z_score_bbu);
+              record.status_gizi = z < -3 ? "Gizi Buruk" : z < -2 ? "Gizi Kurang" : z > 2 ? "Gizi Lebih" : "Normal";
+            } else if (pLatest.status_gizi) {
+              record.status_gizi = pLatest.status_gizi;
+            }
+            if (pLatest.z_score_tbu != null) {
+              const z = Number(pLatest.z_score_tbu);
+              record.status_stunting = z < -3 ? "Stunting Berat" : z < -2 ? "Stunting" : "Normal";
+            }
+          } else if (isBumil) {
+            // Ibu hamil: tidak ada status gizi IMT/z-score; fokus LILA & TD.
+            record.status_gizi = undefined;
+          } else {
+            record.status_gizi = record.status_imt ?? (pLatest.status_gizi ?? undefined);
           }
 
-          if (pLatest.z_score_tbu != null) {
-            const z = pLatest.z_score_tbu;
-            record.status_stunting = z < -3 ? "Stunting Berat" : z < -2 ? "Stunting" : "Normal";
-          }
+          // Catatan interpretasi untuk konsumen (SINDUKSADATI).
+          record.catatan_indikator = isAnak
+            ? "Balita: status gizi memakai Z-score WHO 2006 (0–60 bulan)."
+            : isBumil
+            ? "Ibu hamil: indikator memakai LILA (KEK) & tekanan darah."
+            : "Dewasa: status gizi memakai IMT/BMI (Z-score WHO hanya untuk balita).";
         }
       }
 
