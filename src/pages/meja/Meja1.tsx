@@ -41,10 +41,11 @@ export default function Meja1() {
   const sesiAktifList = data.jadwal.filter((j: any) => j.status === "aktif");
   const sesiAktif = sesiAktifList[0] || null;
 
-  // Sasaran sesi aktif (jika kosong, anggap ILP/semua kategori utama, tanpa "umum")
+  // Sasaran sesi aktif (jika kosong, anggap ILP/semua kategori utama + umum).
+  // Kategori "umum" selalu diikutkan: pasien umum check-in lewat Meja 1 juga.
   const targetSasaran = sesiAktif?.sasaran && sesiAktif.sasaran.length > 0
-    ? sesiAktif.sasaran
-    : ["bayi", "balita", "wus", "lansia", "ibu_hamil"];
+    ? [...sesiAktif.sasaran, "umum"]
+    : ["bayi", "balita", "wus", "lansia", "ibu_hamil", "umum"];
   const targetSasaranSet = useMemo(() => new Set<string>(targetSasaran), [targetSasaran]);
   const isSasaran = (kat: string) => targetSasaranSet.has(kat);
 

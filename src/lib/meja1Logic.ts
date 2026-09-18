@@ -180,8 +180,9 @@ export function filterSasaranBelumHadir(
   const q = (query || "").trim().toLowerCase();
   return (anggotaList || []).filter((a) => {
     if (!a.status_aktif) return false;
-    // Hanya sasaran sesi; "umum" dan kategori di luar target tidak ditampilkan
-    if (a.kategori === "umum" || !sasaranSet.has(a.kategori)) return false;
+    // Tampilkan bila kategorinya masuk target sesi — termasuk "umum"
+    // (pasien umum check-in lewat jalur yang sama). Di luar target: sembunyikan.
+    if (!sasaranSet.has(a.kategori)) return false;
     if (presentMemberIds.has(a.id)) return false;
     if (!q) return true;
     const kk = kkById.get(a.keluarga_id) || "";

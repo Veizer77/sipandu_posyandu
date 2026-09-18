@@ -78,7 +78,7 @@ describe("Meja 1 — logika sesi & sasaran", () => {
     expect(findExistingSessionVisit(all, "a1", "")).toBeUndefined();
   });
 
-  it("filterSasaranBelumHadir: hanya sasaran sesi, bukan umum, bukan sudah hadir", () => {
+  it("filterSasaranBelumHadir: kategori di luar target disembunyikan; umum tampil bila masuk target", () => {
     const anggota = [
       { id: "a1", kategori: "bayi", status_aktif: true, nama: "Budi", nik: "123", keluarga_id: "k1" },
       { id: "a2", kategori: "lansia", status_aktif: true, nama: "Siti", nik: "456", keluarga_id: "k1" },
@@ -86,12 +86,16 @@ describe("Meja 1 — logika sesi & sasaran", () => {
       { id: "a4", kategori: "balita", status_aktif: false, nama: "Nona", nik: "000", keluarga_id: "k1" },
     ];
     const kkById = new Map<string, string>([["k1", "3501"]]);
-    const sasaran = new Set(["bayi", "balita", "ibu_hamil"]);
     const hadir = new Set(["a1"]); // Budi sudah hadir
 
-    const hasil = filterSasaranBelumHadir(anggota, sasaran, hadir, "", kkById);
-    // hanya balita aktif yang belum hadir: a4 nonaktif, a2 lansia di luar target, a3 umum
-    expect(hasil.map((a) => a.id)).toEqual([]);
+    // Target tanpa umum: a3 umum tetap disembunyikan
+    const tanpaUmum = new Set(["bayi", "balita", "ibu_hamil"]);
+    expect(filterSasaranBelumHadir(anggota, tanpaUmum, hadir, "", kkById).map((a) => a.id)).toEqual([]);
+    // Target mencakup umum (default sesi ILP): a3 bisa check-in
+    const denganUmum = new Set(["bayi", "balita", "ibu_hamil", "umum"]);
+    expect(filterSasaranBelumHadir(anggota, denganUmum, hadir, "", kkById).map((a) => a.id)).toEqual(["a3"]);
+    // Pencarian nama tetap menemukan pasien umum
+    expect(filterSasaranBelumHadir(anggota, denganUmum, hadir, "tamu", kkById).map((a) => a.id)).toEqual(["a3"]);
   });
 
   it("getStatusAntreanMeja1: selesai tanpa pengukuran tetap badge selesai (kasus Nadia Safitri)", () => {

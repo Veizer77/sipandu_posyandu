@@ -4,7 +4,7 @@
  */
 import React, { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { CalendarDays, Plus, MapPin, Play, Users, Loader2, RefreshCw } from "lucide-react";
+import { CalendarDays, MapPin, Play, Users, RefreshCw } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useSipandu } from "@/lib/data-store";
 
@@ -25,7 +25,7 @@ export default function PosyanduJadwal() {
   const { showToast, currentUser } = useAuth();
   const navigate = useNavigate();
   const { data, tambahJadwal, updateJadwalStatus, tutupSesiHariH, sinkronkanDataKeCloud, isLoadingDb } = useSipandu();
-  const [showBuat, setShowBuat] = useState(false);
+  const [memulai, setMemulai] = useState(false);
 
   const roleMejaPath =
     currentUser?.peran === "super_admin"
@@ -34,18 +34,8 @@ export default function PosyanduJadwal() {
         ? "/bidan/meja1"
         : "/kader/meja1";
 
-  // S2: dialog "Mulai Alur 5 Meja" (ref legacy posyandu: buat jadwal = langsung aktif)
-  const [showMulai, setShowMulai] = useState(false);
-  const [mulaiJudul, setMulaiJudul] = useState("");
-  const [mulaiMulai, setMulaiMulai] = useState(false);
-  const [mulaiSasaran, setMulaiSasaran] = useState<string[]>([]);
-
-  const [tanggal, setTanggal] = useState(new Date().toISOString().split("T")[0]);
-  const [jenis, setJenis] = useState("bulanan");
-  const [tema, setTema] = useState("");
-  const [tempat, setTempat] = useState("Balai RW 06 Flamboyan");
-  const [catatan, setCatatan] = useState("");
-  const [buatSasaran, setBuatSasaran] = useState<string[]>([]);
+  // Satu-satunya cara membuka sesi: dialog & form jadwal terpisah dihapus.
+  // "Mulai Alur 5 Meja" langsung membuat sesi AKTIF hari ini (ILP semua kategori).
 
   const sesiAktif = data.jadwal.find((j: any) => j.status === "aktif");
   const todayISO = new Date().toISOString().split("T")[0];
@@ -85,17 +75,15 @@ export default function PosyanduJadwal() {
 
   function defaultJudul(): string {
     const bulan = new Date().toLocaleDateString("id-ID", { month: "long", year: "numeric" });
-    return `Posyandu ${JENIS_LABEL[jenis] || "Bulanan"} — ${bulan}`;
+    return `Posyandu Bulanan — ${bulan}`;
   }
 
-  async function handleMulaiAlur(e: React.FormEvent) {
-    e.preventDefault();
-    if (mulaiMulai) return;
-    setMulaiMulai(true);
+  // Satu klik langsung jalan: pakai sesi aktif hari ini bila ada, bila tidak
+  // buat baru (status aktif langsung). Sesi aktif lain ditutup via jalur resmi.
+  async function handleMulaiLangsung() {
+    if (memulai) return;
+    setMemulai(true);
     try {
-      const judul = mulaiJudul.trim() || defaultJudul();
-
-      // Jika sudah ada sesi aktif hari ini, langsung pakai; kalau tidak, buat baru (status aktif langsung, pola legacy)
       const adaAktifHariIni = data.jadwal.some((j: any) => j.status === "aktif" && j.tanggal === todayISO);
       if (!adaAktifHariIni) {
         // Selesaikan sesi aktif hari lain via jalur resmi (risiko absen, arsip,
@@ -104,24 +92,26 @@ export default function PosyanduJadwal() {
         if (aktifLama) {
           await tutupSesiHariH(aktifLama.id);
         }
-        await tambahJadwal({ tanggal: todayISO, jenis, tema: judul, tempat, catatan, status: "aktif", sasaran: mulaiSasaran });
+        await tambahJadwal({ tanggal: todayISO, jenis: "bulanan", tema: defaultJudul(), tempat: "Balai RW 06 Flamboyan", catatan: "", status: "aktif", sasaran: [] });
       }
 
-      setShowMulai(false);
-      setMulaiMulai(false);
       navigate(roleMejaPath);
     } catch (e) {
       console.warn("Gagal memulai sesi:", e);
       showToast("Gagal memulai sesi. Coba lagi.", "danger");
-      setMulaiMulai(false);
+    } finally {
+      setMemulai(false);
     }
   }
 
   // I2 (PRD F-05.2): daftar sasaran per kategori + prioritas
+  // perKategori mencakup "umum" (pasien umum ikut terlihat); prioritas
+  // tetap khusus sasaran program (bayi/balita/ibu_hamil/lansia/wus).
   const daftarSasaran = useMemo(() => {
-    const sasaran = data.anggota.filter((a: any) => a.status_aktif && a.kategori !== "umum");
+    const aktifSemua = data.anggota.filter((a: any) => a.status_aktif);
+    const sasaran = aktifSemua.filter((a: any) => a.kategori !== "umum");
     const perKategori: Record<string, any[]> = {};
-    sasaran.forEach((a: any) => {
+    aktifSemua.forEach((a: any) => {
       (perKategori[a.kategori] = perKategori[a.kategori] || []).push(a);
     });
 
@@ -157,101 +147,8 @@ export default function PosyanduJadwal() {
     return { perKategori, prioritas };
   }, [data.anggota, data.kunjungan, data.kunjunganAktif]);
 
-  async function handleSimpanJadwal(e: React.FormEvent) {
-    e.preventDefault();
-
-    // Validasi PRD F-05.1: tanggal tidak boleh di masa lalu
-    if (tanggal) {
-      const tgl = new Date(`${tanggal}T00:00:00`);
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      if (tgl < todayStart) {
-        showToast("Tanggal jadwal tidak boleh di masa lalu.", "danger");
-        return;
-      }
-    }
-
-    await tambahJadwal({ tanggal, jenis, tema: tema.trim() || defaultJudul(), tempat, catatan, sasaran: buatSasaran });
-    showToast(`Jadwal Posyandu ${tanggal} berhasil dibuat.`, "success");
-    setShowBuat(false);
-    setTema("");
-    setCatatan("");
-  }
-
   return (
     <div className="p-4 sm:p-8 space-y-6">
-      {/* S2: Dialog Mulai Alur 5 Meja */}
-      {showMulai && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" role="dialog">
-          <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={() => !mulaiMulai && setShowMulai(false)} />
-          <div className="relative bg-white rounded-3xl shadow-2xl border border-slate-100 max-w-md w-full p-6 space-y-4">
-            <div className="flex items-start gap-3">
-              <div className="w-11 h-11 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
-                <Play className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="font-bold text-gray-900 text-base">Mulai Alur 5 Meja</h3>
-                <p className="text-xs text-gray-500 mt-1">
-                  Beri judul sesi hari ini, lalu sesi langsung aktif dan kamu masuk ke Meja 1 (Registrasi).
-                </p>
-              </div>
-            </div>
-            <form onSubmit={handleMulaiAlur} className="space-y-3">
-              <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">Judul Sesi Hari Ini *</label>
-                <input
-                  type="text"
-                  autoFocus
-                  value={mulaiJudul}
-                  onChange={(e) => setMulaiJudul(e.target.value)}
-                  placeholder={defaultJudul()}
-                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:border-emerald-500 text-sm outline-none"
-                />
-                <p className="text-[10px] text-gray-400 mt-1">Kosongkan untuk pakai judul default. Tanggal: {new Date().toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</p>
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">Target Sasaran Warga</label>
-                <div className="flex flex-wrap gap-2">
-                  {["bayi", "balita", "ibu_hamil", "lansia", "wus"].map((kat) => (
-                    <label key={kat} className="flex items-center gap-1.5 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={mulaiSasaran.includes(kat)}
-                        onChange={(e) => {
-                          if (e.target.checked) setMulaiSasaran((prev) => [...prev, kat]);
-                          else setMulaiSasaran((prev) => prev.filter((k) => k !== kat));
-                        }}
-                        className="rounded text-emerald-600 focus:ring-emerald-500"
-                      />
-                      <span className="text-xs text-gray-700 capitalize">{kat.replace("_", " ")}</span>
-                    </label>
-                  ))}
-                </div>
-                <p className="text-[10px] text-gray-400 mt-1">Biarkan kosong jika ini Posyandu umum (ILP semua kategori).</p>
-              </div>
-              <div className="flex justify-end gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setShowMulai(false)}
-                  disabled={mulaiMulai}
-                  className="px-4 py-2 border border-gray-200 hover:bg-gray-50 text-gray-700 font-semibold rounded-xl text-xs"
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  disabled={mulaiMulai}
-                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-sm inline-flex items-center gap-1.5 disabled:opacity-60"
-                >
-                  {mulaiMulai ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                  {mulaiMulai ? "Memulai..." : "Buka Sesi & Mulai"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Jadwal Posyandu</h1>
@@ -267,12 +164,6 @@ export default function PosyanduJadwal() {
             <RefreshCw className={`w-4 h-4 ${isLoadingDb ? "animate-spin text-sky-600" : "text-sky-500"}`} />
             <span>{isLoadingDb ? "Menyinkronkan..." : "Sinkronkan ke Cloud"}</span>
           </button>
-          <button
-            onClick={() => setShowBuat((v) => !v)}
-            className="px-4 py-2.5 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-semibold rounded-xl text-sm shadow-sm flex items-center gap-2"
-          >
-            <Plus className="w-4 h-4" /> {showBuat ? "Tutup Form" : "Buat Jadwal Baru"}
-          </button>
           {sesiAktif ? (
             <Link
               to={roleMejaPath}
@@ -282,104 +173,15 @@ export default function PosyanduJadwal() {
             </Link>
           ) : (
             <button
-              onClick={() => {
-                setMulaiJudul("");
-                setShowMulai(true);
-              }}
-              className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl text-sm shadow-sm flex items-center gap-2"
+              onClick={handleMulaiLangsung}
+              disabled={memulai}
+              className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-semibold rounded-xl text-sm shadow-sm flex items-center gap-2"
             >
-              <Play className="w-4 h-4" /> Mulai Alur 5 Meja
+              <Play className="w-4 h-4" /> {memulai ? "Memulai..." : "Mulai Alur 5 Meja"}
             </button>
           )}
         </div>
       </div>
-
-      {showBuat && (
-        <form onSubmit={handleSimpanJadwal} className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm space-y-4">
-          <h2 className="font-bold text-gray-900">Jadwal Baru</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Tanggal *</label>
-              <input
-                type="date"
-                required
-                value={tanggal}
-                onChange={(e) => setTanggal(e.target.value)}
-                className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Jenis</label>
-              <select
-                value={jenis}
-                onChange={(e) => setJenis(e.target.value)}
-                className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm"
-              >
-                <option value="bulanan">Bulanan</option>
-                <option value="tambahan">Tambahan</option>
-                <option value="khusus">Khusus</option>
-              </select>
-            </div>
-            <div className="sm:col-span-2">
-              <label className="block text-xs font-bold text-gray-700 mb-1">Tema / Judul Sesi</label>
-              <input
-                type="text"
-                value={tema}
-                onChange={(e) => setTema(e.target.value)}
-                placeholder="Misal: Penyuluhan Imunisasi, Pencegahan Stunting"
-                className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm"
-              />
-            </div>
-            <div className="sm:col-span-2">
-              <label className="block text-xs font-bold text-gray-700 mb-1">Tempat</label>
-              <input
-                type="text"
-                value={tempat}
-                onChange={(e) => setTempat(e.target.value)}
-                className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm"
-              />
-            </div>
-            <div className="sm:col-span-2">
-              <label className="block text-xs font-bold text-gray-700 mb-1">Catatan</label>
-              <textarea
-                rows={2}
-                value={catatan}
-                onChange={(e) => setCatatan(e.target.value)}
-                placeholder="Misal: Pelayanan bulanan + Bulan Vitamin A"
-                className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm"
-              />
-            </div>
-            <div className="sm:col-span-2">
-              <label className="block text-xs font-bold text-gray-700 mb-1">Target Sasaran Warga</label>
-              <div className="flex flex-wrap gap-2">
-                {["bayi", "balita", "ibu_hamil", "lansia", "wus"].map((kat) => (
-                  <label key={kat} className="flex items-center gap-1.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={buatSasaran.includes(kat)}
-                      onChange={(e) => {
-                        if (e.target.checked) setBuatSasaran((prev) => [...prev, kat]);
-                        else setBuatSasaran((prev) => prev.filter((k) => k !== kat));
-                      }}
-                      className="rounded text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <span className="text-xs text-gray-700 capitalize">{kat.replace("_", " ")}</span>
-                  </label>
-                ))}
-              </div>
-              <p className="text-[10px] text-gray-400 mt-1">Biarkan kosong jika ini Posyandu umum (ILP semua kategori).</p>
-            </div>
-          </div>
-          <div className="flex justify-end">
-            <button
-              type="submit"
-              className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl text-xs shadow-sm"
-            >
-              Simpan Jadwal
-            </button>
-          </div>
-        </form>
-      )}
 
       {/* I2: Ringkasan sasaran & prioritas pra-posyandu (PRD F-05.2) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
