@@ -4,7 +4,7 @@
  */
 import React, { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { CalendarDays, MapPin, Play, Users, RefreshCw } from "lucide-react";
+import { CalendarDays, MapPin, Play, Users, Loader2, RefreshCw } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useSipandu } from "@/lib/data-store";
 
@@ -21,11 +21,19 @@ const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
   dibatalkan: { label: "Dibatalkan", cls: "bg-rose-100 text-rose-700" },
 };
 
+// Pilihan target sasaran di form pra-mulai (kosong = ILP semua kategori).
+const SASARAN_OPTIONS = ["bayi", "balita", "ibu_hamil", "lansia", "wus", "umum"];
+
 export default function PosyanduJadwal() {
   const { showToast, currentUser } = useAuth();
   const navigate = useNavigate();
   const { data, tambahJadwal, updateJadwalStatus, tutupSesiHariH, sinkronkanDataKeCloud, isLoadingDb } = useSipandu();
-  const [memulai, setMemulai] = useState(false);
+
+  // Form pra-mulai: judul sesi + target sasaran, diisi dulu sebelum masuk Meja 1.
+  const [showMulai, setShowMulai] = useState(false);
+  const [mulaiJudul, setMulaiJudul] = useState("");
+  const [mulaiMulai, setMulaiMulai] = useState(false);
+  const [mulaiSasaran, setMulaiSasaran] = useState<string[]>([]);
 
   const roleMejaPath =
     currentUser?.peran === "super_admin"
@@ -34,8 +42,9 @@ export default function PosyanduJadwal() {
         ? "/bidan/meja1"
         : "/kader/meja1";
 
-  // Satu-satunya cara membuka sesi: dialog & form jadwal terpisah dihapus.
-  // "Mulai Alur 5 Meja" langsung membuat sesi AKTIF hari ini (ILP semua kategori).
+  // Satu-satunya cara membuka sesi: tombol "Mulai Alur 5 Meja" membuka form
+  // pra-mulai (judul + target sasaran), lalu sesi AKTIF hari ini dibuat dan
+  // kader masuk Meja 1. Form "Buat Jadwal Baru" terpisah sudah dihapus.
 
   const sesiAktif = data.jadwal.find((j: any) => j.status === "aktif");
   const todayISO = new Date().toISOString().split("T")[0];
@@ -78,12 +87,15 @@ export default function PosyanduJadwal() {
     return `Posyandu Bulanan — ${bulan}`;
   }
 
-  // Satu klik langsung jalan: pakai sesi aktif hari ini bila ada, bila tidak
+  // Form pra-mulai disubmit: pakai sesi aktif hari ini bila ada, bila tidak
   // buat baru (status aktif langsung). Sesi aktif lain ditutup via jalur resmi.
-  async function handleMulaiLangsung() {
-    if (memulai) return;
-    setMemulai(true);
+  async function handleMulaiAlur(e: React.FormEvent) {
+    e.preventDefault();
+    if (mulaiMulai) return;
+    setMulaiMulai(true);
     try {
+      const judul = mulaiJudul.trim() || defaultJudul();
+
       const adaAktifHariIni = data.jadwal.some((j: any) => j.status === "aktif" && j.tanggal === todayISO);
       if (!adaAktifHariIni) {
         // Selesaikan sesi aktif hari lain via jalur resmi (risiko absen, arsip,
@@ -92,15 +104,16 @@ export default function PosyanduJadwal() {
         if (aktifLama) {
           await tutupSesiHariH(aktifLama.id);
         }
-        await tambahJadwal({ tanggal: todayISO, jenis: "bulanan", tema: defaultJudul(), tempat: "Balai RW 06 Flamboyan", catatan: "", status: "aktif", sasaran: [] });
+        await tambahJadwal({ tanggal: todayISO, jenis: "bulanan", tema: judul, tempat: "Balai RW 06 Flamboyan", catatan: "", status: "aktif", sasaran: mulaiSasaran });
       }
 
+      setShowMulai(false);
       navigate(roleMejaPath);
     } catch (e) {
       console.warn("Gagal memulai sesi:", e);
       showToast("Gagal memulai sesi. Coba lagi.", "danger");
     } finally {
-      setMemulai(false);
+      setMulaiMulai(false);
     }
   }
 
@@ -149,6 +162,78 @@ export default function PosyanduJadwal() {
 
   return (
     <div className="p-4 sm:p-8 space-y-6">
+      {/* Form pra-mulai: judul sesi + target sasaran, wajib diisi sebelum masuk Meja 1 */}
+      {showMulai && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" role="dialog">
+          <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={() => !mulaiMulai && setShowMulai(false)} />
+          <div className="relative bg-white rounded-3xl shadow-2xl border border-slate-100 max-w-md w-full p-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                <Play className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-900 text-base">Mulai Alur 5 Meja</h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  Isi judul sesi hari ini dan pilih target sasaran, lalu sesi langsung aktif dan kamu masuk ke Meja 1 (Registrasi).
+                </p>
+              </div>
+            </div>
+            <form onSubmit={handleMulaiAlur} className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">Judul Sesi Hari Ini *</label>
+                <input
+                  type="text"
+                  autoFocus
+                  value={mulaiJudul}
+                  onChange={(e) => setMulaiJudul(e.target.value)}
+                  placeholder={defaultJudul()}
+                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:border-emerald-500 text-sm outline-none"
+                />
+                <p className="text-[10px] text-gray-400 mt-1">Kosongkan untuk pakai judul default. Tanggal: {new Date().toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</p>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">Target Sasaran Warga</label>
+                <div className="flex flex-wrap gap-2">
+                  {SASARAN_OPTIONS.map((kat) => (
+                    <label key={kat} className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={mulaiSasaran.includes(kat)}
+                        onChange={(e) => {
+                          if (e.target.checked) setMulaiSasaran((prev) => [...prev, kat]);
+                          else setMulaiSasaran((prev) => prev.filter((k) => k !== kat));
+                        }}
+                        className="rounded text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <span className="text-xs text-gray-700 capitalize">{kat.replace("_", " ")}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1">Biarkan kosong jika ini Posyandu umum (ILP semua kategori).</p>
+              </div>
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowMulai(false)}
+                  disabled={mulaiMulai}
+                  className="px-4 py-2 border border-gray-200 hover:bg-gray-50 text-gray-700 font-semibold rounded-xl text-xs"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={mulaiMulai}
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-sm inline-flex items-center gap-1.5 disabled:opacity-60"
+                >
+                  {mulaiMulai ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                  {mulaiMulai ? "Memulai..." : "Buka Sesi & Mulai"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Jadwal Posyandu</h1>
@@ -173,11 +258,14 @@ export default function PosyanduJadwal() {
             </Link>
           ) : (
             <button
-              onClick={handleMulaiLangsung}
-              disabled={memulai}
-              className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-semibold rounded-xl text-sm shadow-sm flex items-center gap-2"
+              onClick={() => {
+                setMulaiJudul("");
+                setMulaiSasaran([]);
+                setShowMulai(true);
+              }}
+              className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl text-sm shadow-sm flex items-center gap-2"
             >
-              <Play className="w-4 h-4" /> {memulai ? "Memulai..." : "Mulai Alur 5 Meja"}
+              <Play className="w-4 h-4" /> Mulai Alur 5 Meja
             </button>
           )}
         </div>

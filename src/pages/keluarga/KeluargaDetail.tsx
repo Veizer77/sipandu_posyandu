@@ -4,7 +4,10 @@
  */
 import React from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Plus, UserPlus, ChartLine, Link2, Calendar, FileText, Heart } from "lucide-react";
+import {
+  ArrowLeft, Plus, UserPlus, ChartLine, Link2, Calendar, FileText, Heart,
+  Activity, ShieldCheck, Stethoscope, Droplet, AlertTriangle,
+} from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useSipandu } from "@/lib/data-store";
 import { hitungUsia, klasifikasiSasaran, hitungHPL } from "@/utils/zscoreCalculator";
@@ -14,6 +17,7 @@ import { findExistingSessionVisit } from "@/lib/meja1Logic";
 import { CategoryBadge } from "@/components/meja/MejaShared";
 import { Avatar } from "@/components/Avatar";
 import { maskNik, formatTanggalSingkat } from "@/lib/utils";
+import { SinduksadatiService } from "@/services/sinduksadatiService";
 
 export function KeluargaDetail() {
   const { kkId } = useParams();
@@ -125,6 +129,15 @@ export function AnggotaDetail() {
   const keluarga = data.keluarga.find((k: any) => k.id === a.keluarga_id);
   const hplInfo = a.status_hamil ? hitungHPL(a.hpht) : null;
 
+  // Rekam Kesehatan Siklus Hidup (Posyandu ILP) — sumber indikator sama dengan
+  // payload Citizen 360 SINDUKSADATI agar tampilan & integrasi konsisten.
+  const lastVisit = [...(activeVisit ? [activeVisit] : []), ...kunjungan]
+    .filter((k: any) => k.waktu_hadir)
+    .sort((x: any, y: any) => new Date(y.waktu_hadir).getTime() - new Date(x.waktu_hadir).getTime())[0];
+  const rekamKesehatan = SinduksadatiService.formatCitizen360Payload(a, lastVisit);
+  const indikator = rekamKesehatan.indikator_kesehatan;
+  const totalKunjungan = kunjungan.length;
+
   async function handleSelesaikanKehamilan() {
     await selesaikanKehamilan(a.id);
     showToast("Kehamilan diselesaikan. Kategori anggota dikembalikan sesuai usia.", "success");
@@ -173,6 +186,180 @@ export function AnggotaDetail() {
           </Link>
         </div>
       </div>
+
+      {/* ===== Rekam Kesehatan Siklus Hidup (Posyandu ILP) ===== */}
+      {canSeeClinical && (
+        <div className="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden">
+          {/* Header gradien bergaya ILP */}
+          <div className="bg-gradient-to-r from-teal-600 via-teal-500 to-sky-600 px-6 py-5 text-white">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-white/20 backdrop-blur-md rounded-xl">
+                  <Activity className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base leading-tight">Rekam Kesehatan Siklus Hidup</h3>
+                  <p className="text-[11px] text-teal-50/90">Posyandu ILP · Integrasi pemantauan tumbuh kembang &amp; skrining penyakit tidak menular</p>
+                </div>
+              </div>
+              <span className="self-start sm:self-center px-3 py-1 rounded-full bg-white/20 backdrop-blur-md text-[11px] font-bold whitespace-nowrap">
+                Standar WHO &amp; Kemenkes
+              </span>
+            </div>
+          </div>
+
+          <div className="p-6 space-y-4">
+            {/* Tiga kartu indikator utama */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {/* Sasaran & Usia */}
+              <div className="p-5 rounded-2xl bg-teal-50/60 border border-teal-100">
+                <span className="flex items-center gap-1.5 text-[10px] font-bold text-teal-700 uppercase tracking-wider mb-2">
+                  <ShieldCheck className="w-3 h-3" /> Sasaran &amp; Usia
+                </span>
+                <p className="font-black text-base text-gray-900 flex items-center gap-2 flex-wrap">
+                  {a.nama}
+                  {usia?.hariLahir && (
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-white text-teal-700 border border-teal-200 align-middle">
+                      Lahir {usia.hariLahir}
+                    </span>
+                  )}
+                </p>
+                <p className="text-xs text-gray-600 mt-1">
+                  {klas.label} ({usia?.years ?? "-"} Th / {usia?.totalBulan ?? "-"} Bln)
+                </p>
+              </div>
+
+              {/* Status Gizi / Kemandirian */}
+              <div className="p-5 rounded-2xl bg-emerald-50/60 border border-emerald-100">
+                <span className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-700 uppercase tracking-wider mb-2">
+                  <Activity className="w-3 h-3" /> Status Gizi / Kemandirian
+                </span>
+                <p className="font-black text-base text-emerald-950">
+                  {indikator.status_gizi || indikator.status_imt || (a.status_hamil ? "Indikator Kehamilan" : "Belum ada data")}
+                </p>
+                {(() => {
+                  const p = lastVisit?.pengukuran || {};
+                  const isAnak = a.kategori === "bayi" || a.kategori === "balita";
+                  const isBumil = a.kategori === "ibu_hamil" || a.status_hamil;
+                  const chips: { label: string; cls: string }[] = [];
+                  if (p.berat_badan != null) chips.push({ label: `BB: ${p.berat_badan} kg`, cls: "bg-white text-gray-700 border-gray-200" });
+                  if (p.tinggi_badan != null) chips.push({ label: `TB: ${p.tinggi_badan} cm`, cls: "bg-white text-gray-700 border-gray-200" });
+
+                  if (isAnak) {
+                    if (indikator.z_score_bbu != null) chips.push({ label: `Z-BB/U: ${indikator.z_score_bbu}`, cls: "bg-emerald-100 text-emerald-800 border-emerald-200" });
+                    if (indikator.z_score_tbu != null) chips.push({ label: `Z-TB/U: ${indikator.z_score_tbu}`, cls: "bg-emerald-100 text-emerald-800 border-emerald-200" });
+                  } else if (isBumil) {
+                    if (indikator.lila_cm != null) chips.push({ label: `LILA: ${indikator.lila_cm} cm${indikator.status_kek ? " (KEK)" : ""}`, cls: indikator.status_kek ? "bg-rose-100 text-rose-800 border-rose-200" : "bg-emerald-100 text-emerald-800 border-emerald-200" });
+                  } else if (indikator.imt != null) {
+                    chips.push({ label: `IMT: ${indikator.imt} (${indikator.status_imt ?? "-"})`, cls: "bg-emerald-100 text-emerald-800 border-emerald-200" });
+                  }
+
+                  if (chips.length === 0) {
+                    return (
+                      <p className="text-[11px] text-gray-500 mt-2 leading-relaxed">
+                        {totalKunjungan > 0
+                          ? "Sudah diperiksa di Posyandu, namun antropometri belum dicatat pada kunjungan terakhir."
+                          : "Belum ada kunjungan Posyandu tercatat untuk anggota ini."}
+                      </p>
+                    );
+                  }
+                  return (
+                    <div className="flex flex-wrap gap-1.5 mt-2.5">
+                      {chips.map((c, i) => (
+                        <span key={i} className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${c.cls}`}>{c.label}</span>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Riwayat Medis & Skrining */}
+              <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200/80">
+                <span className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  <Stethoscope className="w-3 h-3" /> Riwayat Medis &amp; Skrining
+                </span>
+                <p className="font-bold text-gray-900 text-sm">
+                  {indikator.tekanan_darah_terakhir ? `${indikator.tekanan_darah_terakhir} mmHg` : "Belum ada skrining"}
+                </p>
+                {indikator.status_risiko && indikator.status_risiko.length > 0 && (
+                  <p className="text-[11px] text-rose-600 font-semibold mt-1 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" /> {indikator.status_risiko.length} indikator risiko
+                  </p>
+                )}
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Update: {lastVisit?.waktu_hadir ? new Date(lastVisit.waktu_hadir).toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" }) : "—"}
+                </p>
+                <p className="text-[11px] text-emerald-600 font-semibold mt-1">Total Kunjungan: {totalKunjungan}</p>
+              </div>
+            </div>
+
+            {/* Kartu skrining PTM: Tekanan Darah & Gula Darah */}
+            {(() => {
+              const p = lastVisit?.pengukuran || {};
+              const sistol = p.td_sistolik ?? p.tekanan_darah_sistol;
+              const diastol = p.td_diastolik ?? p.tekanan_darah_diastol;
+              const gds = p.gula_darah_sewaktu ?? p.gula_darah;
+              const lingkarPerut = p.lingkar_perut;
+              if (!sistol && !gds && !lingkarPerut) return null;
+
+              const tdNum = Number(sistol);
+              const tdLabel =
+                sistol && diastol
+                  ? tdNum >= 160 ? "Hipertensi Derajat 2" : tdNum >= 140 ? "Hipertensi Derajat 1" : tdNum >= 120 ? "Pre-Hipertensi" : "Normal"
+                  : null;
+              const gdsNum = Number(gds);
+              const gdsLabel =
+                gds ? (gdsNum >= 200 ? "Diabetes" : gdsNum >= 140 ? "Prediabetes" : "Normal") : null;
+
+              return (
+                <div className="p-4 rounded-2xl bg-indigo-50/60 border border-indigo-100 grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+                  {sistol && diastol && (
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-white rounded-xl border border-indigo-100 text-indigo-600">
+                        <Heart className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="text-indigo-600/70 text-[10px] uppercase font-bold block">Tekanan Darah</span>
+                        <span className="font-bold text-indigo-900 text-sm">{sistol}/{diastol} mmHg</span>
+                        {tdLabel && <span className="block text-[10px] font-semibold text-gray-500">{tdLabel}</span>}
+                      </div>
+                    </div>
+                  )}
+                  {gds && (
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-white rounded-xl border border-indigo-100 text-indigo-600">
+                        <Droplet className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="text-indigo-600/70 text-[10px] uppercase font-bold block">Gula Darah Sewaktu</span>
+                        <span className="font-bold text-indigo-900 text-sm">{gds} mg/dL</span>
+                        {gdsLabel && <span className="block text-[10px] font-semibold text-gray-500">{gdsLabel}</span>}
+                      </div>
+                    </div>
+                  )}
+                  {lingkarPerut && (
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-white rounded-xl border border-indigo-100 text-indigo-600">
+                        <Activity className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="text-indigo-600/70 text-[10px] uppercase font-bold block">Lingkar Perut</span>
+                        <span className="font-bold text-indigo-900 text-sm">{lingkarPerut} cm</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {indikator.catatan && (
+              <p className="text-[11px] text-slate-500 bg-slate-50 border border-slate-100 rounded-xl px-3 py-2 leading-relaxed">
+                {indikator.catatan}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* F2: kartu kehamilan aktif */}
       {a.status_hamil && (
